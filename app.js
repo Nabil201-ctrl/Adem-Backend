@@ -11,17 +11,16 @@ import multer from 'multer';
 import { CloudinaryStorage } from 'multer-storage-cloudinary'; // NEW: Import Cloudinary storage for Multer
 import { v2 as cloudinary } from 'cloudinary';
 import path from 'path';
-
 dotenv.config();
 
 const app = express();
 
-// Configure CORS (unchanged)
 app.use(cors({
-    origin: '*',
+    origin: '*', // Your frontend origin
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
+    credentials: true,
+    optionsSuccessStatus: 200
 }));
 app.use(express.json());
 
@@ -159,7 +158,7 @@ const UserSchema = new mongoose.Schema({
     avatar: {
         url: { type: String, default: '' }, // Cloudinary URL
         publicId: { type: String, default: '' } // Cloudinary public ID for deletion
-  }
+    }
 });
 
 
@@ -235,7 +234,46 @@ const NotificationSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 });
 
+const WelcomeDocumentSchema = new mongoose.Schema({
+    pdfUrl: {
+        type: String,
+        required: true,
+        trim: true,
+        validate: {
+            validator: function (value) {
+                try {
+                    new URL(value); // Validate that it's a valid URL
+                    return true;
+                } catch (error) {
+                    return false;
+                }
+            },
+            message: 'Invalid URL format',
+        },
+    },
+    uploadedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now,
+    },
+    updatedAt: {
+        type: Date,
+        default: Date.now,
+    },
+});
 
+WelcomeDocumentSchema.index({ createdAt: -1 });
+
+// Update `updatedAt` on save
+WelcomeDocumentSchema.pre('save', function (next) {
+    this.updatedAt = Date.now();
+    next();
+});
+
+const WelcomeDocument = mongoose.model('WelcomeDocument', WelcomeDocumentSchema);
 const Notification = mongoose.model('Notification', NotificationSchema);
 const RegistrationDeadline = mongoose.model('RegistrationDeadline', RegistrationDeadlineSchema);
 const User = mongoose.model('User', UserSchema);
@@ -245,6 +283,7 @@ const Maintenance = mongoose.model('Maintenance', MaintenanceSchema);
 const Settings = mongoose.model('Settings', SettingsSchema);
 const Payment = mongoose.model('Payment', PaymentSchema);
 const PaymentSlip = mongoose.model('PaymentSlip', PaymentSlipSchema);
+let MainTicket;
 
 // Nodemailer Setup
 const transporter = nodemailer.createTransport({
@@ -307,6 +346,7 @@ function verifyToken(req, res, next) {
     try {
         const verified = jwt.verify(token, process.env.JWT_SECRET);
         req.user = verified;
+        MainTicket = req.user
         next();
     } catch (error) {
         return res.status(403).json({ error: { message: 'Invalid token', code: 'INVALID_TOKEN' } });
@@ -339,6 +379,20 @@ function handleMulterError(err, req, res, next) {
     next();
 }
 
+// Validation middleware for PDF URL
+const validatePdfUrl = [
+    body('pdfUrl')
+        .notEmpty()
+        .withMessage('URL is required')
+        .isURL()
+        .withMessage('Invalid URL format')
+        .trim(),
+];
+
+const validateId = [
+    param('id').isMongoId().withMessage('Invalid document ID'),
+];
+
 // Routes
 app.get('/api/protected', verifyToken, async (req, res) => {
     try {
@@ -355,6 +409,58 @@ app.get('/api/protected', verifyToken, async (req, res) => {
         res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
     }
 });
+
+// Endpoint to update welcome PDF URL
+app.post(
+    '/api/update-welcome-pdf',
+    verifyToken,
+    isAdmin,
+    validatePdfUrl,
+    async (req, res) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
+            }
+
+            const { pdfUrl } = req.body;
+            const adminId = req.user._id; // From verifyToken middleware
+
+            // Find existing document or create a new one
+            let welcomeDoc = await WelcomeDocument.findOne();
+            if (welcomeDoc) {
+                // Update existing document
+                welcomeDoc.pdfUrl = pdfUrl;
+                welcomeDoc.uploadedBy = adminId;
+                welcomeDoc.updatedAt = Date.now();
+                await welcomeDoc.save();
+            } else {
+                // Create new document
+                welcomeDoc = new WelcomeDocument({
+                    pdfUrl,
+                    uploadedBy: adminId,
+                });
+                await welcomeDoc.save();
+            }
+
+            // Notify other admins (optional)
+            const admins = await User.find({ userType: 'admin', _id: { $ne: adminId } });
+            await Notification.insertMany(
+                admins.map((admin) => ({
+                    user: admin._id,
+                    title: 'Welcome PDF Updated',
+                    message: `The welcome PDF URL has been updated by an admin: ${pdfUrl}`,
+                    type: 'info',
+                }))
+            );
+
+            res.json({ message: 'Welcome PDF URL updated successfully', pdfUrl });
+        } catch (error) {
+            console.error('❌ Update Welcome PDF Error:', error);
+            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+        }
+    }
+);
 
 app.post(
     '/api/register',
@@ -836,7 +942,6 @@ app.get('/api/student/dashboard', verifyToken, isStudent, async (req, res) => {
 });
 
 
-
 // Student Stats
 app.get('/api/students/stats', verifyToken, isAdmin, async (req, res) => {
     try {
@@ -1248,13 +1353,19 @@ app.post(
             await student.save();
 
             const frontendUrl = 'http://127.0.0.1:5500/login-form/verify-otp.html';
-            const welcomeFileUrl = 'https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1'; // dl=1 for direct download
+            // Fetch the latest WelcomeDocument
+            const welcomeDoc = await WelcomeDocument.findOne().sort({ updatedAt: -1 });
+            const pdfUrl = welcomeDoc
+                ? welcomeDoc.pdfUrl
+                : 'https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1'; // Fallback URL
+
             try {
-                const attachment = await fetchFileForAttachment(welcomeFileUrl);
+                // Attempt to fetch the PDF as an attachment
+                const attachment = await fetchFileForAttachment(pdfUrl);
                 await sendEmail(
                     student.email,
                     'Adem Baba – Your OTP & Welcome Guide',
-                    `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. It expires in 1 day. Please verify at ${frontendUrl}. We've also attached a welcome guide to help you get started.`,
+                    `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. It expires in 1 day. Please verify at ${frontendUrl}. Download the welcome guide here: ${pdfUrl}`,
                     `
     <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
         <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
@@ -1266,38 +1377,37 @@ app.post(
         <p>
             <a href="${frontendUrl}" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Verify OTP</a>
         </p>
-        <p>📎 We've also attached a welcome guide to help you get started.</p>
+        <p>📎 Download the welcome guide here: <a href="${pdfUrl}" style="color: #0073bb; text-decoration: none;">Welcome Guide</a></p>
         <hr style="margin: 20px 0;" />
         <p style="font-size: 12px; color: #666;">If you did not request this, please disregard this message.</p>
     </div>
     `,
                     [attachment]
                 );
-
             } catch (fetchError) {
                 console.error('❌ Failed to fetch welcome document:', fetchError);
-                // Fallback: Send email without attachment
+                // Fallback: Send email with PDF URL as a link
                 await sendEmail(
                     student.email,
-                    'Adem Baba – Your One-Time Password (OTP)',
-                    `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. It expires in 1 day. You can verify your account at ${frontendUrl}.`,
+                    'Adem Baba – Your OTP & Welcome Guide',
+                    `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. It expires in 1 day. Please verify at ${frontendUrl}. Download the welcome guide here: ${pdfUrl}`,
                     `
     <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-        <h2 style="color: #232f3e;">🔐 Your One-Time Password</h2>
+        <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
         <p>Hi <strong>${student.name}</strong>,</p>
         <p>Your registration request has been approved.</p>
-        <p>Please use the following One-Time Password (OTP) to activate your account:</p>
-        <p style="font-size: 24px; font-weight: bold; background-color: #f9f9f9; padding: 10px; border-radius: 6px; text-align: center;">${otp}</p>
-        <p>This OTP will expire in <strong>24 hours</strong>.</p>
+        <p><strong>Use the OTP below to activate your account:</strong></p>
+        <p style="font-size: 24px; font-weight: bold; background-color: #f5f5f5; padding: 10px; border-radius: 6px; text-align: center;">${otp}</p>
+        <p>This OTP will expire in <strong>1 day</strong>.</p>
         <p>
-            <a href="${frontendUrl}" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Verify Account</a>
+            <a href="${frontendUrl}" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Verify OTP</a>
         </p>
+        <p>📎 Download the welcome guide here: <a href="${pdfUrl}" style="color: #0073bb; text-decoration: none;">Welcome Guide</a></p>
         <hr style="margin: 20px 0;" />
-        <p style="font-size: 12px; color: #666;">If you did not initiate this registration, please ignore this message.</p>
+        <p style="font-size: 12px; color: #666;">If you did not request this, please disregard this message.</p>
     </div>
     `
                 );
-
             }
 
             res.json({ message: 'Student approved and OTP sent.' });
@@ -1919,6 +2029,8 @@ app.delete(
         }
     }
 );
+
+
 
 // Add Maintenance Request
 app.post(
@@ -3181,6 +3293,154 @@ app.put(
         }
     }
 );
+
+/* LINKS */
+// Create a new WelcomeDocument
+app.post(
+    '/api/documents',
+    verifyToken,
+    isAdmin,
+    validatePdfUrl,
+    async (req, res) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
+            }
+
+            const { pdfUrl } = req.body;
+            const Ticket = MainTicket.id;
+            const adminId = Ticket;
+
+            const welcomeDoc = new WelcomeDocument({
+                pdfUrl,
+                uploadedBy: adminId, // Automatically set from authenticated user
+            });
+            await welcomeDoc.save();
+
+            res.status(201).json({ message: 'Document created successfully', document: welcomeDoc });
+        } catch (error) {
+            console.error('❌ Create Document Error:', error);
+            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+        }
+    }
+);
+
+// Get all WelcomeDocuments or the latest one
+app.get(
+    '/api/documents',
+    verifyToken,
+    async (req, res) => {
+        try {
+            const { latest } = req.query; // e.g., ?latest=true to get only the latest document
+            let documents;
+
+            if (latest === 'true') {
+                // Fetch the latest document
+                documents = await WelcomeDocument.findOne()
+                    .sort({ createdAt: -1 })
+                    .populate('uploadedBy', 'name email')
+                    .lean();
+                return res.json({ document: documents || null }); // Return null if no document
+            } else {
+                // Fetch all documents
+                documents = await WelcomeDocument.find()
+                    .sort({ createdAt: -1 })
+                    .populate('uploadedBy', 'name email')
+                    .lean();
+                return res.json({ documents: documents || [] }); // Return empty array if no documents
+            }
+        } catch (error) {
+            console.error('❌ Get All Welcome Documents Error:', error);
+            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+        }
+    }
+);
+
+// Update a WelcomeDocument
+app.put(
+    '/api/documents/:id',
+    verifyToken,
+    isAdmin,
+    validateId,
+    validatePdfUrl,
+    async (req, res) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
+            }
+
+            const { pdfUrl } = req.body;
+            const adminId = req.user._id;
+
+            const document = await WelcomeDocument.findById(req.params.id);
+            if (!document) {
+                return res.status(404).json({ error: { message: 'Document not found', code: 'NOT_FOUND' } });
+            }
+
+            document.pdfUrl = pdfUrl;
+            document.uploadedBy = adminId;
+            await document.save();
+
+            // Notify other admins
+            const admins = await User.find({ userType: 'admin', _id: { $ne: adminId } });
+            await Notification.insertMany(
+                admins.map((admin) => ({
+                    user: admin._id,
+                    title: 'Document Updated',
+                    message: `A document URL has been updated by an admin: ${pdfUrl}`,
+                    type: 'info',
+                }))
+            );
+
+            res.json({ message: 'Document updated successfully', document });
+        } catch (error) {
+            console.error('❌ Update Document Error:', error);
+            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+        }
+    }
+);
+
+// Delete a WelcomeDocument
+app.delete(
+    '/api/documents/:id',
+    verifyToken,
+    isAdmin,
+    validateId,
+    async (req, res) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
+            }
+
+            const document = await WelcomeDocument.findById(req.params.id);
+            if (!document) {
+                return res.status(404).json({ error: { message: 'Document not found', code: 'NOT_FOUND' } });
+            }
+
+            await document.deleteOne();
+
+            // Notify other admins
+            const admins = await User.find({ userType: 'admin', _id: { $ne: req.user._id } });
+            await Notification.insertMany(
+                admins.map((admin) => ({
+                    user: admin._id,
+                    title: 'Welcome PDF Deleted',
+                    message: `A welcome PDF URL has been deleted by an admin.`,
+                    type: 'info',
+                }))
+            );
+
+            res.json({ message: 'Welcome PDF deleted successfully' });
+        } catch (error) {
+            console.error('❌ Delete Welcome PDF Error:', error);
+            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+        }
+    }
+);
+
 
 // Start Server
 const PORT = process.env.PORT || 3000;
