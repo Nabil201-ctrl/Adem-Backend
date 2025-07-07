@@ -664,7 +664,7 @@ app.post(
             student.status = 'Approved';
             await student.save();
 
-            const frontendUrl = 'http://127.0.0.1:5500/login-form/verify-otp.html';
+            const frontendUrl = 'https://adem-baba.vercel.app/login-form/verify-otp.html';
             await sendEmail(
                 student.email,
                 'Adem Baba – Your One-Time Password (OTP)',
@@ -987,14 +987,17 @@ app.get('/api/pending-requests', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
-// Accept Request (Schedule Interview)
+// Accept Request (Schedule Interview with Welcome Documents)
 app.post(
     '/api/accept-request',
     verifyToken,
     isAdmin,
     [
         body('studentId').isMongoId().withMessage('Invalid student ID'),
-        body('interviewDate').isISO8601().toDate().withMessage('Invalid interview date')
+        body('interviewDate')
+            .isISO8601()
+            .toDate()
+            .withMessage('Invalid interview date')
             .custom((value) => {
                 const interview = new Date(value);
                 const today = new Date();
@@ -1004,19 +1007,36 @@ app.post(
                 }
                 return true;
             }),
-        body('interviewTime').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('Invalid time format'),
+        body('interviewTime')
+            .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+            .withMessage('Invalid time format'),
     ],
     async (req, res) => {
         try {
             const errors = validationResult(req);
             if (!errors.isEmpty()) {
-                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
+                return res.status(400).json({
+                    error: {
+                        message: 'Validation failed',
+                        details: errors.array(),
+                        code: 'VALIDATION_ERROR',
+                    },
+                });
             }
 
             const { studentId, interviewDate, interviewTime } = req.body;
             const student = await User.findById(studentId);
-            if (!student || student.userType !== 'student' || student.status !== 'Pending') {
-                return res.status(404).json({ error: { message: 'Student not found or not pending', code: 'NOT_FOUND' } });
+            if (
+                !student ||
+                student.userType !== 'student' ||
+                student.status !== 'Pending'
+            ) {
+                return res.status(404).json({
+                    error: {
+                        message: 'Student not found or not pending',
+                        code: 'NOT_FOUND',
+                    },
+                });
             }
 
             const [hours, minutes] = interviewTime.split(':');
@@ -1026,66 +1046,92 @@ app.post(
             student.interviewDate = interviewDateTime;
             await student.save();
 
-            const interviewFileUrl = 'https://www.dropbox.com/scl/fi/rtqbr66dqjvs7y8o8rx5u/UNIVERSITY-OF-ABUJA-ADEM-BABA-HOSTEL-FORM.pdf?rlkey=d3x9ahnebbekdwtdniqxxweon&st=d79hytj4&dl=1'; // dl=1 for direct download
-            try {
-                const attachment = await fetchFileForAttachment(interviewFileUrl, 'interview-instructions.pdf');
-                await sendEmail(
-                    student.email,
-                    'Adem Baba – Interview Invitation',
-                    `Hello ${student.name}, your registration has been accepted. You are invited for an interview on ${interviewDateTime.toLocaleString()} at the Adem Baba Hostel Office. Please review the attached interview instructions.`,
-                    `
-    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-        <h2 style="color: #232f3e;">📅 Interview Scheduled</h2>
-        <p>Hi <strong>${student.name}</strong>,</p>
-        <p>Congratulations! Your registration request has been accepted.</p>
-        <p>You are invited to attend an in-person interview. Please find the details below:</p>
-        <ul style="line-height: 1.6;">
-            <li><strong>Date:</strong> ${interviewDateTime.toLocaleDateString()}</li>
-            <li><strong>Time:</strong> ${interviewTime}</li>
-            <li><strong>Location:</strong> Adem Baba Hostel Office</li>
-        </ul>
-        <p>📎 Please refer to the attached document for interview guidelines and expectations.</p>
-        <hr style="margin: 20px 0;" />
-        <p style="font-size: 12px; color: #666;">If you have any questions or are unable to attend, please contact the office as soon as possible.</p>
-    </div>
-    `,
-                    [attachment]
-                );
+            // Fetch welcome documents
+            const welcomeDocs = await WelcomeDocument.find({
+                pdfUrl: { $exists: true, $ne: '' },
+            }).sort({ updatedAt: -1 });
+            const pdfUrls = welcomeDocs.map((doc) => doc.pdfUrl);
+            const pdfLinksHtml = pdfUrls.length
+                ? pdfUrls
+                    .map(
+                        (url, index) =>
+                            `<li><a href="${url}" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide ${index + 1}</a></li>`
+                    )
+                    .join('')
+                : `<li><a href="https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide</a></li>`;
 
-            } catch (fetchError) {
-                console.error('❌ Failed to fetch interview document:', fetchError);
-                // Fallback: Send email without attachment
+            try {
+
                 await sendEmail(
                     student.email,
                     'Adem Baba – Interview Invitation',
                     `Hello ${student.name}, your registration has been accepted. You are invited for an interview on ${interviewDateTime.toLocaleString()} at the Adem Baba Hostel Office.`,
                     `
-    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-        <h2 style="color: #232f3e;">🎓 Interview Invitation</h2>
-        <p>Hi <strong>${student.name}</strong>,</p>
-        <p>We’re pleased to inform you that your registration has been accepted.</p>
-        <p><strong>You are scheduled for an interview with the following details:</strong></p>
-        <ul style="line-height: 1.6;">
-            <li><strong>Date:</strong> ${interviewDateTime.toLocaleDateString()}</li>
-            <li><strong>Time:</strong> ${interviewTime}</li>
-            <li><strong>Location:</strong> Adem Baba Hostel Office</li>
-        </ul>
-        <p>Please ensure you arrive a few minutes early and bring any necessary documents.</p>
-        <hr style="margin: 20px 0;" />
-        <p style="font-size: 12px; color: #666;">If you have any questions or are unable to attend, please notify the office in advance.</p>
-    </div>
-    `
+              <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
+                <h2 style="color: #232f3e;">📅 Interview Scheduled</h2>
+                <p>Hi <strong>${student.name}</strong>,</p>
+                <p>Congratulations! Your registration request has been accepted.</p>
+                <p>You are invited to attend an in-person interview. Please find the details below:</p>
+                <ul style="line-height: 1.6;">
+                  <li><strong>Date:</strong> ${interviewDateTime.toLocaleDateString()}</li>
+                  <li><strong>Time:</strong> ${interviewTime}</li>
+                  <li><strong>Location:</strong> Adem Baba Hostel Office</li>
+                </ul>
+                <p>📎 Please refer to the attached document for interview guidelines and expectations.</p>
+                <p>📎 Download the welcome guide(s):</p>
+                <ul style="padding-left: 20px; line-height: 1.6;">
+                  ${pdfLinksHtml}
+                </ul>
+                <hr style="margin: 20px 0;" />
+                <p style="font-size: 12px; color: #666;">If you have any questions or are unable to attend, please contact the office as soon as possible.</p>
+              </div>
+            `,
                 );
+            } catch (fetchError) {
+                console.error('❌ Failed to fetch interview document:', fetchError);
 
+                await sendEmail(
+                    student.email,
+                    'Adem Baba – Interview Invitation',
+                    `Hello ${student.name}, your registration has been accepted. You are invited for an interview on ${interviewDateTime.toLocaleString()} at the Adem Baba Hostel Office.`,
+                    `
+              <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
+                <h2 style="color: #232f3e;">🎓 Interview Invitation</h2>
+                <p>Hi <strong>${student.name}</strong>,</p>
+                <p>We’re pleased to inform you that your registration has been accepted.</p>
+                <p><strong>You are scheduled for an interview with the following details:</strong></p>
+                <ul style="line-height: 1.6;">
+                  <li><strong>Date:</strong> ${interviewDateTime.toLocaleDateString()}</li>
+                  <li><strong>Time:</strong> ${interviewTime}</li>
+                  <li><strong>Location:</strong> Adem Baba Hostel Office</li>
+                </ul>
+                <p>Please ensure you arrive a few minutes early and bring any necessary documents.</p>
+                <p>📎 Download the welcome guide(s):</p>
+                <ul style="padding-left: 20px; line-height: 1.6;">
+                  ${pdfLinksHtml}
+                </ul>
+                <hr style="margin: 20px 0;" />
+                <p style="font-size: 12px; color: #666;">If you have any questions or are unable to attend, please notify the office in advance.</p>
+              </div>
+            `
+                );
             }
 
-            res.json({ message: 'Interview scheduled and details sent to student.' });
+            res.json({
+                message: 'Interview scheduled and welcome documents sent to student.',
+            });
         } catch (error) {
             console.error('❌ Accept Request Error:', error);
-            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+            res.status(500).json({
+                error: {
+                    message: 'Server Error',
+                    code: 'SERVER_ERROR',
+                },
+            });
         }
     }
 );
+  
 
 // Upload Payment Slip (Student)
 app.post(
@@ -1333,90 +1379,91 @@ app.post(
     isAdmin,
     [body('studentId').isMongoId().withMessage('Invalid student ID')],
     async (req, res) => {
-        try {
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
-            }
-
-            const { studentId } = req.body;
-            const student = await User.findById(studentId);
-            if (!student || student.userType !== 'student' || student.status !== 'Pending') {
-                return res.status(404).json({ error: { message: 'Student not found or not pending', code: 'NOT_FOUND' } });
-            }
-
-            const otp = generateOTP();
-            const otpExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-            student.otp = otp;
-            student.otpExpires = otpExpires;
-            student.status = 'Approved';
-            await student.save();
-
-            const frontendUrl = 'http://127.0.0.1:5500/login-form/verify-otp.html';
-            // Fetch the latest WelcomeDocument
-            const welcomeDoc = await WelcomeDocument.findOne().sort({ updatedAt: -1 });
-            const pdfUrl = welcomeDoc
-                ? welcomeDoc.pdfUrl
-                : 'https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1'; // Fallback URL
-
-            try {
-                // Attempt to fetch the PDF as an attachment
-                const attachment = await fetchFileForAttachment(pdfUrl);
-                await sendEmail(
-                    student.email,
-                    'Adem Baba – Your OTP & Welcome Guide',
-                    `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. It expires in 1 day. Please verify at ${frontendUrl}. Download the welcome guide here: ${pdfUrl}`,
-                    `
-    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-        <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
-        <p>Hi <strong>${student.name}</strong>,</p>
-        <p>Your registration request has been approved.</p>
-        <p><strong>Use the OTP below to activate your account:</strong></p>
-        <p style="font-size: 24px; font-weight: bold; background-color: #f5f5f5; padding: 10px; border-radius: 6px; text-align: center;">${otp}</p>
-        <p>This OTP will expire in <strong>1 day</strong>.</p>
-        <p>
-            <a href="${frontendUrl}" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Verify OTP</a>
-        </p>
-        <p>📎 Download the welcome guide here: <a href="${pdfUrl}" style="color: #0073bb; text-decoration: none;">Welcome Guide</a></p>
-        <hr style="margin: 20px 0;" />
-        <p style="font-size: 12px; color: #666;">If you did not request this, please disregard this message.</p>
-    </div>
-    `,
-                    [attachment]
-                );
-            } catch (fetchError) {
-                console.error('❌ Failed to fetch welcome document:', fetchError);
-                // Fallback: Send email with PDF URL as a link
-                await sendEmail(
-                    student.email,
-                    'Adem Baba – Your OTP & Welcome Guide',
-                    `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. It expires in 1 day. Please verify at ${frontendUrl}. Download the welcome guide here: ${pdfUrl}`,
-                    `
-    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-        <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
-        <p>Hi <strong>${student.name}</strong>,</p>
-        <p>Your registration request has been approved.</p>
-        <p><strong>Use the OTP below to activate your account:</strong></p>
-        <p style="font-size: 24px; font-weight: bold; background-color: #f5f5f5; padding: 10px; border-radius: 6px; text-align: center;">${otp}</p>
-        <p>This OTP will expire in <strong>1 day</strong>.</p>
-        <p>
-            <a href="${frontendUrl}" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Verify OTP</a>
-        </p>
-        <p>📎 Download the welcome guide here: <a href="${pdfUrl}" style="color: #0073bb; text-decoration: none;">Welcome Guide</a></p>
-        <hr style="margin: 20px 0;" />
-        <p style="font-size: 12px; color: #666;">If you did not request this, please disregard this message.</p>
-    </div>
-    `
-                );
-            }
-
-            res.json({ message: 'Student approved and OTP sent.' });
-        } catch (error) {
-            console.error('❌ Accept Request Direct Error:', error);
-            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+      try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+          return res.status(400).json({
+            error: {
+              message: 'Validation failed',
+              details: errors.array(),
+              code: 'VALIDATION_ERROR',
+            },
+          });
         }
+  
+        const { studentId } = req.body;
+  
+        // Fetch student and validate status
+        const student = await User.findById(studentId);
+        if (!student || student.userType !== 'student' || student.status !== 'Pending') {
+          return res.status(404).json({
+            error: {
+              message: 'Student not found or not pending',
+              code: 'NOT_FOUND',
+            },
+          });
+        }
+  
+        // Generate OTP and approve student
+        const otp = generateOTP();
+        const otpExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 1 day
+        student.otp = otp;
+        student.otpExpires = otpExpires;
+        student.status = 'Approved';
+        await student.save();
+  
+        const frontendUrl = 'http://127.0.0.1:5500/login-form/verify-otp.html';
+  
+        // Fetch all welcome documents
+        const welcomeDocs = await WelcomeDocument.find({ pdfUrl: { $exists: true, $ne: '' } }).sort({ updatedAt: -1 });
+        const pdfUrls = welcomeDocs.map(doc => doc.pdfUrl);
+  
+        // Generate HTML list of links
+        const pdfLinksHtml = pdfUrls.length
+          ? pdfUrls.map((url, index) => `<li><a href="${url}" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide ${index + 1}</a></li>`).join('')
+          : `<li><a href="https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide</a></li>`;
+  
+        const emailHtml = `
+          <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
+            <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
+            <p>Hi <strong>${student.name}</strong>,</p>
+            <p>Your registration request has been approved.</p>
+            <p><strong>Use the OTP below to activate your account:</strong></p>
+            <p style="font-size: 24px; font-weight: bold; background-color: #f5f5f5; padding: 10px; border-radius: 6px; text-align: center;">${otp}</p>
+            <p>This OTP will expire in <strong>1 day</strong>.</p>
+            <p>
+              <a href="${frontendUrl}" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Verify OTP</a>
+            </p>
+            <p>📎 Download the welcome guide(s):</p>
+            <ul style="padding-left: 20px; line-height: 1.6;">
+              ${pdfLinksHtml}
+            </ul>
+            <hr style="margin: 20px 0;" />
+            <p style="font-size: 12px; color: #666;">If you did not request this, please disregard this message.</p>
+          </div>
+        `;
+  
+        // Send email
+        await sendEmail(
+          student.email,
+          'Adem Baba – Your OTP & Welcome Guide',
+          `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. Download welcome guides and verify your OTP.`,
+          emailHtml
+        );
+  
+        res.json({ message: 'Student approved and OTP sent.' });
+      } catch (error) {
+        console.error('❌ Accept Request Direct Error:', error);
+        res.status(500).json({
+          error: {
+            message: 'Server Error',
+            code: 'SERVER_ERROR',
+          },
+        });
+      }
     }
-);
+  );
+  
 
 // Decline Request
 app.post(
@@ -1496,7 +1543,7 @@ app.post(
                     }
                 );
 
-                const resetUrl = `http://127.0.0.1:5500/login-form/reset-password.html?token=${resetToken}`;
+                const resetUrl = `https://adem-baba.vercel.app/login-form/reset-password.html?token=${resetToken}`;
                 await sendEmail(
                     email,
                     'Adem Baba – Password Reset Instructions',
@@ -1534,8 +1581,6 @@ If you did not request this reset, please ignore this email or contact support.
         }
     }
 );
-
-
 
 // Reset Password Route
 app.post(
@@ -2410,7 +2455,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         await user.save();
 
         // Send email
-        const resetUrl = `http://127.0.0.1:5501/login-form/reset-password.html?token=${token}`;
+        const resetUrl = `https://adem-baba.vercel.app.com/apilogin-form/reset-password.html?token=${token}`;
         console.log(resetUrl)
         await sendEmail(
             email,
