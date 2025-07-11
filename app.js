@@ -11,6 +11,8 @@ import multer from 'multer';
 import { CloudinaryStorage } from 'multer-storage-cloudinary'; // NEW: Import Cloudinary storage for Multer
 import { v2 as cloudinary } from 'cloudinary';
 import path from 'path';
+import axios from 'axios';
+import stream from 'stream';
 dotenv.config();
 
 const app = express();
@@ -74,6 +76,48 @@ const upload = multer({
     },
     limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
+
+
+/* Document Cloudinary config */
+const documentStorage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: (req, file) => {
+      let folder;
+      if (file.fieldname === 'jambOrCgpa') {
+        folder = req.body.jambOrCgpaType === 'JAMB_RESULT' ? 'jamb_result' : 'cgpa';
+      } else if (file.fieldname === 'admissionLetter') {
+        folder = 'admission_letter';
+      } else if (file.fieldname === 'nin') {
+        folder = 'nin';
+      }
+      return {
+        folder: `adem_baba/documents/${folder}`,
+        allowed_formats: ['jpeg', 'jpg', 'png'],
+        resource_type: 'image',
+      };
+    },
+  });
+  
+  const documentFileFilter = (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png/;
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = filetypes.test(file.mimetype);
+    if (extname && mimetype) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG and PNG allowed.'), false);
+    }
+  };
+  
+  const uploadDocuments = multer({
+    storage: documentStorage,
+    fileFilter: documentFileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  }).fields([
+    { name: 'jambOrCgpa', maxCount: 1 },
+    { name: 'admissionLetter', maxCount: 1 },
+    { name: 'nin', maxCount: 1 },
+  ]);
 
 
 // MongoDB Connection
@@ -147,6 +191,10 @@ const UserSchema = new mongoose.Schema({
         newStudent: { type: Boolean, default: true }, // Notifications for new student registrations
         maintenance: { type: Boolean, default: false } // Notifications for system maintenance
     },
+    documents: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'StudentDocument',
+      }],
     security: {
         twoFactorAuth: { type: Boolean, default: false }, // 2FA setting
         twoFactorSecret: { type: String } // Optional: for storing 2FA secret if implementing TOTP
@@ -159,7 +207,7 @@ const UserSchema = new mongoose.Schema({
         url: { type: String, default: '' }, // Cloudinary URL
         publicId: { type: String, default: '' } // Cloudinary public ID for deletion
     }
-});
+},{timestamps:true});
 
 
 const RoomSchema = new mongoose.Schema({
@@ -273,6 +321,41 @@ WelcomeDocumentSchema.pre('save', function (next) {
     next();
 });
 
+const StudentDocumentSchema = new mongoose.Schema({
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+    documentType: {
+      type: String,
+      enum: ['JAMB_RESULT', 'CGPA', 'ADMISSION_LETTER', 'NIN'],
+      required: true, 
+    },
+    fileUrl: {
+      type: String,
+      required: true,
+    },
+    publicId: {
+      type: String,
+      required: true,
+    },
+    fileType: {
+      type: String,
+      enum: ['image/jpeg', 'image/png'],
+      required: true,
+    },
+    uploadedAt: {
+      type: Date,
+      default: Date.now,
+    },
+}, { timestamps: true });
+  
+
+
+
+const StudentDocument = mongoose.model('StudentDocument', StudentDocumentSchema);  
 const WelcomeDocument = mongoose.model('WelcomeDocument', WelcomeDocumentSchema);
 const Notification = mongoose.model('Notification', NotificationSchema);
 const RegistrationDeadline = mongoose.model('RegistrationDeadline', RegistrationDeadlineSchema);
@@ -355,8 +438,21 @@ function verifyToken(req, res, next) {
 
 // Admin Middleware
 function isAdmin(req, res, next) {
+    if (!req.user) {
+        return res.status(401).json({ 
+            error: { 
+                message: 'Authentication required. No user found.', 
+                code: 'NO_USER' 
+            } 
+        });
+    }
     if (req.user.userType !== 'admin') {
-        return res.status(403).json({ error: { message: 'Access denied. Admins only.', code: 'ADMIN_ONLY' } });
+        return res.status(403).json({ 
+            error: { 
+                message: 'Access denied. Admins only.', 
+                code: 'ADMIN_ONLY' 
+            } 
+        });
     }
     next();
 }
@@ -462,180 +558,255 @@ app.post(
     }
 );
 
+
+//Registeration route
 app.post(
     '/api/register',
+    uploadDocuments,
+    handleMulterError,
     [
-        body('email').isEmail().withMessage('Invalid email format'),
-        body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-        body('name').trim().notEmpty().withMessage('Name is required'),
-        body('userType').isIn(['admin', 'student']).withMessage('Invalid user type'),
-        body('adminSecretKey')
-            .if(body('userType').equals('admin'))
-            .notEmpty().withMessage('Admin secret key is required for admin registration'),
-        body('matricNumber')
-            .if(body('userType').equals('student'))
-            .notEmpty().withMessage('Matric number is required for students')
-            .matches(/^\d{2}\/[A-Z0-9]{6}\/\d{3}$/).withMessage('Invalid matric number format (e.g., 23/208CSE/786)'),
-        body('phone')
-            .if(body('userType').equals('student'))
-            .notEmpty().withMessage('Phone number is required for students')
-            .matches(/^\+?[\d\s()-]{10,}$/).withMessage('Invalid phone number format'),
-        body('gender')
-            .if(body('userType').equals('student'))
-            .isIn(['Male', 'Female', 'Other']).withMessage('Invalid gender'),
-        body('dateOfBirth')
-            .if(body('userType').equals('student'))
-            .isISO8601().toDate().withMessage('Invalid date of birth')
-            .custom((value) => {
-                const dob = new Date(value);
-                const today = new Date();
-                if (dob >= today || today.getFullYear() - dob.getFullYear() < 15) {
-                    throw new Error('Must be at least 15 years old');
-                }
-                return true;
-            }),
-        body('faculty')
-            .if(body('userType').equals('student'))
-            .trim().notEmpty().withMessage('Faculty is required for students'),
-        body('level')
-            .if(body('userType').equals('student'))
-            .matches(/^(100|200|300|400|500|600|700)level$/).withMessage('Invalid level (e.g., 400level)'),
-        body('department')
-            .if(body('userType').equals('student'))
-            .trim().notEmpty().withMessage('Department is required for students'),
+      body('email').isEmail().withMessage('Invalid email format'),
+      body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+      body('name').trim().notEmpty().withMessage('Name is required'),
+      body('userType').isIn(['admin', 'student']).withMessage('Invalid user type'),
+      body('adminSecretKey')
+        .if(body('userType').equals('admin'))
+        .notEmpty().withMessage('Admin secret key is required for admin registration'),
+      body('matricNumber')
+        .if(body('userType').equals('student'))
+        .notEmpty().withMessage('Matric number is required for students')
+        .matches(/^\d{2}\/[A-Z0-9]{6}\/\d{3}$/).withMessage('Invalid matric number format (e.g., 23/208CSE/786)'),
+      body('phone')
+        .if(body('userType').equals('student'))
+        .notEmpty().withMessage('Phone number is required for students')
+        .matches(/^\+?[\d\s()-]{10,}$/).withMessage('Invalid phone number format'),
+      body('gender')
+        .if(body('userType').equals('student'))
+        .isIn(['Male', 'Female', 'Other']).withMessage('Invalid gender'),
+      body('dateOfBirth')
+        .if(body('userType').equals('student'))
+        .isISO8601().toDate().withMessage('Invalid date of birth')
+        .custom((value) => {
+          const dob = new Date(value);
+          const today = new Date();
+          if (dob >= today || today.getFullYear() - dob.getFullYear() < 15) {
+            throw new Error('Must be at least 15 years old');
+          }
+          return true;
+        }),
+      body('faculty')
+        .if(body('userType').equals('student'))
+        .trim().notEmpty().withMessage('Faculty is required for students'),
+      body('level')
+        .if(body('userType').equals('student'))
+        .matches(/^(100|200|300|400|500|600|700)level$/).withMessage('Invalid level (e.g., 400level)'),
+      body('department')
+        .if(body('userType').equals('student'))
+        .trim().notEmpty().withMessage('Department is required for students'),
+      body('jambOrCgpaType')
+        .if(body('userType').equals('student'))
+        .isIn(['JAMB_RESULT', 'CGPA']).withMessage('Must specify JAMB_RESULT or CGPA'),
     ],
     async (req, res) => {
-        try {
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
-            }
-
-            const { email, password, userType, name, adminSecretKey, matricNumber, phone, gender, dateOfBirth, faculty, level, department } = req.body;
-
-            // Check registration deadline for students
-            if (userType === 'student') {
-                const deadline = await RegistrationDeadline.findOne();
-                const now = new Date();
-
-                if (deadline) {
-                    const currentDeadline = deadline.extended && deadline.extendedDeadline ? deadline.extendedDeadline : deadline.deadline;
-                    if (now > currentDeadline) {
-                        return res.status(403).json({
-                            error: {
-                                message: 'The Adem Baba Hostel has closed the page for booking hostel.',
-                                code: 'REGISTRATION_CLOSED',
-                                deadline: currentDeadline
-                            }
-                        });
-                    }
-                } else {
-                    return res.status(403).json({
-                        error: {
-                            message: 'The Adem Baba Hostel has closed the page for booking hostel.',
-                            code: 'NO_DEADLINE_SET'
-                        }
-                    });
-                }
-            }
-
-            // Admin-specific checks
-            if (userType === 'admin') {
-                // Verify admin secret key
-                if (adminSecretKey !== process.env.ADMIN_SECRET_KEY) {
-                    return res.status(403).json({
-                        error: {
-                            message: 'Invalid admin secret key. Admin registration is restricted.',
-                            code: 'INVALID_ADMIN_KEY'
-                        }
-                    });
-                }
-
-                // Check admin count
-                const adminCount = await User.countDocuments({ userType: 'admin' });
-                if (adminCount >= 2) {
-                    return res.status(403).json({
-                        error: {
-                            message: 'Maximum number of admin accounts (2) has been reached.',
-                            code: 'ADMIN_LIMIT_EXCEEDED'
-                        }
-                    });
-                }
-            }
-
-            const existingUser = await User.findOne({ $or: [{ email }, { matricNumber: matricNumber || null }] });
-            if (existingUser) {
-                return res.status(400).json({ error: { message: 'Email or matric number already exists', code: 'DUPLICATE' } });
-            }
-
-            const hashedPassword = await hashing(password);
-            const user = new User({
-                name,
-                email,
-                password: hashedPassword,
-                userType,
-                matricNumber: userType === 'student' ? matricNumber : undefined,
-                phone: userType === 'student' ? phone : undefined,
-                gender: userType === 'student' ? gender : undefined,
-                dateOfBirth: userType === 'student' ? dateOfBirth : undefined,
-                faculty: userType === 'student' ? faculty : undefined,
-                level: userType === 'student' ? level : undefined,
-                department: userType === 'student' ? department : undefined,
-                status: userType === 'student' ? 'Pending' : 'Approved',
-            });
-            await user.save();
-
-            if (userType === 'student') {
-                const admins = await User.find({ userType: 'admin' });
-                for (const admin of admins) {
-                    const settings = await Settings.findOne({ user: admin._id });
-                    if (settings?.notifications.newStudent) {
-                        await sendEmail(
-                            admin.email,
-                            'Student Registration Request – Approval Needed',
-                            `A new student named ${name} (${email}) with Matric Number ${matricNumber} has submitted a registration request and is awaiting your approval.`,
-                            `
-    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-        <h2 style="color: #232f3e;">📌 New Student Registration Request</h2>
-        <p><strong>Student Name:</strong> ${name}</p>
-        <p><strong>Email Address:</strong> ${email}</p>
-        <p><strong>Matric Number:</strong> ${matricNumber}</p>
-        <hr style="margin: 20px 0;" />
-        <p>Please log in to the Admin Dashboard to review and approve this request.</p>
-        <p style="font-size: 12px; color: #666;">If you did not expect this email or believe it was sent in error, please disregard it.</p>
-    </div>
-    `
-                        );
-                    }
-                }
-            } else {
-                await sendEmail(
-                    email,
-                    'Welcome to Adem Baba – Admin Access Granted',
-                    `Hello ${name}, you have been successfully registered as an Admin for Adem Baba. Your account is now active.`,
-                    `
-    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-        <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
-        <p>Hi <strong>${name}</strong>,</p>
-        <p>We're excited to let you know that your admin account has been successfully activated.</p>
-        <p>You now have full access to the Admin Dashboard and can begin managing the platform.</p>
-        <hr style="margin: 20px 0;" />
-        <p style="font-size: 12px; color: #666;">If you have any questions or need help getting started, feel free to contact support.</p>
-    </div>
-    `
-                );
-            }
-
-            res.status(201).json({ message: 'Registration successful.' });
-        } catch (error) {
-            console.error('❌ Registration Error:', error);
-            res.status(500).json({ error: { message: 'Server Error', code: 'SERVER_ERROR' } });
+      try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+          return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
         }
+  
+        const { email, password, userType, name, adminSecretKey, matricNumber, phone, gender, dateOfBirth, faculty, level, department, jambOrCgpaType } = req.body;
+  
+        // Validate file uploads for students
+        if (userType === 'student') {
+          const files = req.files;
+          if (!files.jambOrCgpa || !files.admissionLetter || !files.nin) {
+            return res.status(400).json({ error: { message: 'JAMB/CGPA, Admission Letter, and NIN images are required', code: 'NO_FILE' } });
+          }
+        }
+  
+        // Check registration deadline for students
+        if (userType === 'student') {
+          const deadline = await RegistrationDeadline.findOne();
+          const now = new Date();
+  
+          if (deadline) {
+            const currentDeadline = deadline.extended && deadline.extendedDeadline ? deadline.extendedDeadline : deadline.deadline;
+            if (now > currentDeadline) {
+              return res.status(403).json({
+                error: {
+                  message: 'The Adem Baba Hostel has closed the page for booking hostel.',
+                  code: 'REGISTRATION_CLOSED',
+                  deadline: currentDeadline,
+                },
+              });
+            }
+          } else {
+            return res.status(403).json({
+              error: {
+                message: 'The Adem Baba Hostel has closed the page for booking hostel.',
+                code: 'NO_DEADLINE_SET',
+              },
+            });
+          }
+        }
+  
+        // Admin-specific checks
+        if (userType === 'admin') {
+          if (adminSecretKey !== process.env.ADMIN_SECRET_KEY) {
+            return res.status(403).json({
+              error: {
+                message: 'Invalid admin secret key. Admin registration is restricted.',
+                code: 'INVALID_ADMIN_KEY',
+              },
+            });
+          }
+  
+          const adminCount = await User.countDocuments({ userType: 'admin' });
+          if (adminCount >= 2) {
+            return res.status(403).json({
+              error: {
+                message: 'Maximum number of admin accounts (2) has been reached.',
+                code: 'ADMIN_LIMIT_EXCEEDED',
+              },
+            });
+          }
+        }
+  
+        // Check for existing user
+        const existingUser = await User.findOne({ $or: [{ email }, { matricNumber: matricNumber || null }] });
+        if (existingUser) {
+          return res.status(400).json({ error: { message: 'Email or matric number already exists', code: 'DUPLICATE' } });
+        }
+  
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+  
+        // Create user
+        const user = new User({
+          name,
+          email,
+          password: hashedPassword,
+          userType,
+          matricNumber: userType === 'student' ? matricNumber : undefined,
+          phone: userType === 'student' ? phone : undefined,
+          gender: userType === 'student' ? gender : undefined,
+          dateOfBirth: userType === 'student' ? dateOfBirth : undefined,
+          faculty: userType === 'student' ? faculty : undefined,
+          level: userType === 'student' ? level : undefined,
+          department: userType === 'student' ? department : undefined,
+          status: userType === 'student' ? 'Pending' : 'Approved',
+        });
+  
+        // Handle document uploads for students
+        let documents = [];
+        if (userType === 'student') {
+          const files = req.files;
+          const documentData = [
+            { file: files.jambOrCgpa[0], type: jambOrCgpaType },
+            { file: files.admissionLetter[0], type: 'ADMISSION_LETTER' },
+            { file: files.nin[0], type: 'NIN' },
+          ];
+  
+          try {
+            documents = await Promise.all(
+              documentData.map(async ({ file, type }) => {
+                console.log(`Cloudinary upload response for ${type}:`, file);
+                const doc = new StudentDocument({
+                  student: user._id,
+                  documentType: type,
+                  fileUrl: file.path,
+                  publicId: file.filename,
+                  fileType: file.mimetype,
+                });
+                await doc.save();
+                return doc;
+              })
+            );
+  
+            user.documents = documents.map(doc => doc._id);
+          } catch (error) {
+            // Clean up Cloudinary files on error
+            await Promise.all(
+              documentData
+                .map(({ file }) => file.filename)
+                .filter(Boolean)
+                .map((id) => cloudinary.uploader.destroy(id, { resource_type: 'image' }))
+            );
+            throw error;
+          }
+        }
+  
+        // Save user
+        await user.save();
+  
+        // Send email notifications
+        if (userType === 'student') {
+          const admins = await User.find({ userType: 'admin' });
+          for (const admin of admins) {
+            const settings = await Settings.findOne({ user: admin._id });
+            if (settings?.notifications.newStudent) {
+              await sendEmail(
+                admin.email,
+                'Student Registration Request – Approval Needed',
+                `A new student named ${name} (${email}) with Matric Number ${matricNumber} has submitted a registration request with documents and is awaiting your approval.`,
+                `
+          <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
+              <h2 style="color: #232f3e;">📌 New Student Registration Request</h2>
+              <p><strong>Student:</strong> ${name}</p>
+              <p><strong>Email:</strong> ${email}</p>
+              <p><strong>Matric Number:</strong> ${matricNumber}</p>
+              <p><strong>Documents Uploaded:</strong> ${jambOrCgpaType}, Admission Letter, NIN</p>
+              <p><a href="https://adem-baba.vercel.app/admin/student-documents" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Review Documents</a></p>
+              <hr style="margin: 20px 0;" />
+              <p style="font-size: 12px; color: #666;">Please take appropriate action in the Admin Dashboard.</p>
+          </div>
+          `
+              ).catch((emailError) => console.error('Email failed for', admin.email, emailError));
+            }
+          }
+        } else {
+          await sendEmail(
+            email,
+            'Welcome to Adem Baba – Admin Access Granted',
+            `Hello ${name}, you have been successfully registered as an Admin for Adem Baba. Your account is now active.`,
+            `
+          <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
+              <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
+              <p>Hi <strong>${name}</strong>,</p>
+              <p>We're excited to let you know that your admin account has been successfully activated.</p>
+              <p>You now have full access to the Admin Dashboard and can begin managing the platform.</p>
+              <hr style="margin: 20px 0;" />
+              <p style="font-size: 12px; color: #666;">If you have any questions or need help getting started, feel free to contact support.</p>
+          </div>
+          `
+          ).catch((emailError) => console.error('Email failed for', email, emailError));
+        }
+  
+        res.status(201).json({ message: 'Registration successful.' });
+      } catch (error) {
+        console.error('❌ Registration Error:', error);
+        // Clean up Cloudinary files on error
+        if (userType === 'student' && req.files) {
+          const files = req.files;
+          const publicIds = [
+            files.jambOrCgpa?.[0]?.filename,
+            files.admissionLetter?.[0]?.filename,
+            files.nin?.[0]?.filename,
+          ].filter(Boolean);
+          await Promise.all(
+            publicIds.map((id) => cloudinary.uploader.destroy(id, { resource_type: 'image' }))
+          );
+        }
+        res.status(500).json({ error: { message: 'Failed to register', code: 'SERVER_ERROR', details: error.message } });
+      }
     }
 );
 
+
+
+
 // Generate OTP (Admin)
-app.post(
+app.post( 
     '/api/students/generate-otp',
     verifyToken,
     isAdmin,
@@ -1131,7 +1302,7 @@ app.post(
         }
     }
 );
-  
+
 
 // Upload Payment Slip (Student)
 app.post(
@@ -1328,36 +1499,118 @@ app.post(
     }
 );
 
-
-// Download Payment Slip File (Admin)
-app.get(
-    '/api/payment-slips/:id/download',
-    verifyToken,
-    isAdmin,
-    [param('id').isMongoId().withMessage('Invalid payment slip ID')],
-    async (req, res) => {
-        try {
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
-            }
-
-            const { id } = req.params;
-            const paymentSlip = await PaymentSlip.findById(id).populate('student', 'matricNumber');
-            if (!paymentSlip) {
-                return res.status(404).json({ error: { message: 'Payment slip not found', code: 'NOT_FOUND' } });
-            }
-
-            const fileExt = paymentSlip.fileType === 'image' ? 'jpg' : 'pdf';
-            const fileName = `payment-slip-${paymentSlip.student.matricNumber}-${id}.${fileExt}`;
-            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-            res.redirect(paymentSlip.fileUrl);
-        } catch (error) {
-            console.error('❌ Download Payment Slip Error:', error);
-            res.status(500).json({ error: { message: 'Failed to download payment slip', code: 'SERVER_ERROR' } });
+// Updated payment slip download route with better error handling
+app.get('/api/payment-slips/:id/download', verifyToken, isAdmin, async (req, res) => {
+    try {
+        // Validate ID
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({
+                error: {
+                    message: 'Invalid payment slip ID',
+                    code: 'INVALID_ID'
+                }
+            });
         }
+
+        const paymentSlip = await PaymentSlip.findById(req.params.id)
+            .populate('student', 'matricNumber name');
+
+        if (!paymentSlip) {
+            return res.status(404).json({
+                error: {
+                    message: 'Payment slip not found',
+                    code: 'NOT_FOUND'
+                }
+            });
+        }
+
+        if (!paymentSlip.fileUrl) {
+            return res.status(404).json({
+                error: {
+                    message: 'File URL not found for this payment slip',
+                    code: 'MISSING_FILE'
+                }
+            });
+        }
+
+        // Generate a safe filename
+        const safeMatric = (paymentSlip.student?.matricNumber || 'unknown').replace(/[^a-z0-9]/gi, '_');
+        const fileExt = paymentSlip.fileUrl.split('.').pop().split('?')[0].toLowerCase();
+        const filename = `Payment_${safeMatric}_${paymentSlip.amount || 'slip'}.${fileExt}`;
+
+        // Fetch the file from storage with timeout
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+        const response = await axios.get(paymentSlip.fileUrl, {
+            responseType: 'arraybuffer',
+            signal: controller.signal
+        });
+
+        clearTimeout(timeout);
+
+        // Validate response
+        if (!response.data || response.data.length === 0) {
+            return res.status(502).json({
+                error: {
+                    message: 'Empty response from storage',
+                    code: 'EMPTY_RESPONSE'
+                }
+            });
+        }
+
+        // Set proper headers for download
+        res.set({
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Type': response.headers['content-type'] || 'application/octet-stream',
+            'Content-Length': response.headers['content-length'],
+            'Access-Control-Expose-Headers': 'Content-Disposition'
+        });
+
+        res.send(response.data);
+
+    } catch (error) {
+        console.error('❌ Error downloading payment slip:', error);
+
+        // Handle specific errors
+        if (error.name === 'AbortError') {
+            return res.status(504).json({
+                error: {
+                    message: 'Request to storage service timed out',
+                    code: 'TIMEOUT'
+                }
+            });
+        }
+
+        if (error.response) {
+            return res.status(502).json({
+                error: {
+                    message: 'Failed to fetch file from storage',
+                    code: 'STORAGE_ERROR',
+                    details: error.response.statusText
+                }
+            });
+        }
+
+        if (error.code === 'ENOTFOUND') {
+            return res.status(502).json({
+                error: {
+                    message: 'Could not connect to storage service',
+                    code: 'NETWORK_ERROR'
+                }
+            });
+        }
+
+        res.status(500).json({
+            error: {
+                message: 'Failed to download payment slip',
+                code: 'SERVER_ERROR',
+                details: error.message
+            }
+        });
     }
-);
+});
+
 
 // Updated: Get Payment Slips (Student)
 app.get('/api/student/payment-slips', verifyToken, isStudent, async (req, res) => {
@@ -1379,51 +1632,51 @@ app.post(
     isAdmin,
     [body('studentId').isMongoId().withMessage('Invalid student ID')],
     async (req, res) => {
-      try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-          return res.status(400).json({
-            error: {
-              message: 'Validation failed',
-              details: errors.array(),
-              code: 'VALIDATION_ERROR',
-            },
-          });
-        }
-  
-        const { studentId } = req.body;
-  
-        // Fetch student and validate status
-        const student = await User.findById(studentId);
-        if (!student || student.userType !== 'student' || student.status !== 'Pending') {
-          return res.status(404).json({
-            error: {
-              message: 'Student not found or not pending',
-              code: 'NOT_FOUND',
-            },
-          });
-        }
-  
-        // Generate OTP and approve student
-        const otp = generateOTP();
-        const otpExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 1 day
-        student.otp = otp;
-        student.otpExpires = otpExpires;
-        student.status = 'Approved';
-        await student.save();
-  
-        const frontendUrl = 'http://127.0.0.1:5500/login-form/verify-otp.html';
-  
-        // Fetch all welcome documents
-        const welcomeDocs = await WelcomeDocument.find({ pdfUrl: { $exists: true, $ne: '' } }).sort({ updatedAt: -1 });
-        const pdfUrls = welcomeDocs.map(doc => doc.pdfUrl);
-  
-        // Generate HTML list of links
-        const pdfLinksHtml = pdfUrls.length
-          ? pdfUrls.map((url, index) => `<li><a href="${url}" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide ${index + 1}</a></li>`).join('')
-          : `<li><a href="https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide</a></li>`;
-  
-        const emailHtml = `
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    error: {
+                        message: 'Validation failed',
+                        details: errors.array(),
+                        code: 'VALIDATION_ERROR',
+                    },
+                });
+            }
+
+            const { studentId } = req.body;
+
+            // Fetch student and validate status
+            const student = await User.findById(studentId);
+            if (!student || student.userType !== 'student' || student.status !== 'Pending') {
+                return res.status(404).json({
+                    error: {
+                        message: 'Student not found or not pending',
+                        code: 'NOT_FOUND',
+                    },
+                });
+            }
+
+            // Generate OTP and approve student
+            const otp = generateOTP();
+            const otpExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 1 day
+            student.otp = otp;
+            student.otpExpires = otpExpires;
+            student.status = 'Approved';
+            await student.save();
+
+            const frontendUrl = 'http://127.0.0.1:5500/login-form/verify-otp.html';
+
+            // Fetch all welcome documents
+            const welcomeDocs = await WelcomeDocument.find({ pdfUrl: { $exists: true, $ne: '' } }).sort({ updatedAt: -1 });
+            const pdfUrls = welcomeDocs.map(doc => doc.pdfUrl);
+
+            // Generate HTML list of links
+            const pdfLinksHtml = pdfUrls.length
+                ? pdfUrls.map((url, index) => `<li><a href="${url}" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide ${index + 1}</a></li>`).join('')
+                : `<li><a href="https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide</a></li>`;
+
+            const emailHtml = `
           <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
             <h2 style="color: #232f3e;">🎉 Welcome to Adem Baba</h2>
             <p>Hi <strong>${student.name}</strong>,</p>
@@ -1442,28 +1695,28 @@ app.post(
             <p style="font-size: 12px; color: #666;">If you did not request this, please disregard this message.</p>
           </div>
         `;
-  
-        // Send email
-        await sendEmail(
-          student.email,
-          'Adem Baba – Your OTP & Welcome Guide',
-          `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. Download welcome guides and verify your OTP.`,
-          emailHtml
-        );
-  
-        res.json({ message: 'Student approved and OTP sent.' });
-      } catch (error) {
-        console.error('❌ Accept Request Direct Error:', error);
-        res.status(500).json({
-          error: {
-            message: 'Server Error',
-            code: 'SERVER_ERROR',
-          },
-        });
-      }
+
+            // Send email
+            await sendEmail(
+                student.email,
+                'Adem Baba – Your OTP & Welcome Guide',
+                `Hello ${student.name}, your registration has been approved. Use the OTP ${otp} to activate your account. Download welcome guides and verify your OTP.`,
+                emailHtml
+            );
+
+            res.json({ message: 'Student approved and OTP sent.' });
+        } catch (error) {
+            console.error('❌ Accept Request Direct Error:', error);
+            res.status(500).json({
+                error: {
+                    message: 'Server Error',
+                    code: 'SERVER_ERROR',
+                },
+            });
+        }
     }
-  );
-  
+);
+
 
 // Decline Request
 app.post(
@@ -3153,6 +3406,7 @@ app.get('/api/settings', verifyToken, async (req, res) => {
 app.put(
     '/api/settings/profile',
     verifyToken,
+    isAdmin,
     upload.single('avatar'),
     handleMulterError,
     [
@@ -3486,6 +3740,141 @@ app.delete(
     }
 );
 
+
+
+
+
+
+
+
+
+/* CRUD BACKEND STUDENTLINK UPLOAD FOR STUDENTS*/
+// Get all student documents (with optional filters)
+app.get('/api/student-documents',verifyToken, isAdmin, async (req, res) => {
+    try {
+      const { studentId, matricNumber } = req.query;
+      let query = {};
+  
+      if (studentId) {
+        query.student = studentId;
+      } else if (matricNumber) {
+        const student = await User.findOne({ matricNumber });
+        if (!student) {
+          return res.status(404).json({ error: { message: 'Student not found', code: 'NOT_FOUND' } });
+        }
+        query.student = student._id;
+      }
+  
+      const documents = await StudentDocument.find(query).populate('student', 'name matricNumber email');
+      res.json(documents);
+    } catch (error) {
+      console.error('❌ Error fetching documents:', error);
+      res.status(500).json({ error: { message: 'Failed to fetch documents', code: 'SERVER_ERROR', details: error.message } });
+    }
+});
+  
+
+  // Get documents for a specific student
+  app.get('/api/student-documents/student/:studentId',verifyToken, isAdmin, async (req, res) => {
+    try {
+      const documents = await StudentDocument.find({ student: req.params.studentId })
+        .populate('student', 'name matricNumber email');
+      if (!documents.length) {
+        return res.status(404).json({ error: { message: 'No documents found for this student', code: 'NOT_FOUND' } });
+      }
+      res.json(documents);
+    } catch (error) {
+      console.error('❌ Error fetching student documents:', error);
+      res.status(500).json({ error: { message: 'Failed to fetch documents', code: 'SERVER_ERROR', details: error.message } });
+    }
+  });
+  
+// Update your download endpoint to force file download
+app.get('/api/student-documents/download/:documentId', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const document = await StudentDocument.findById(req.params.documentId).populate('student');
+        if (!document) {
+            return res.status(404).json({ error: { message: 'Document not found', code: 'NOT_FOUND' } });
+        }
+
+        // Determine filename
+        let filename = document.fileName || `document_${document._id}`;
+        const ext = document.fileUrl.split('.').pop();
+        filename = `${filename}.${ext}`;
+
+        // Set headers to force download
+        res.set({
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Type': 'application/octet-stream'
+        });
+
+        // Redirect to the actual file URL (or proxy the file)
+        res.redirect(document.fileUrl);
+    } catch (error) {
+        console.error('❌ Error downloading document:', error);
+        res.status(500).json({ error: { message: 'Failed to download document', code: 'SERVER_ERROR', details: error.message } });
+    }
+});
+  // Delete a document
+  app.delete('/api/student-documents/:documentId',verifyToken, isAdmin, async (req, res) => {
+    try {
+      const document = await StudentDocument.findById(req.params.documentId);
+      if (!document) {
+        return res.status(404).json({ error: { message: 'Document not found', code: 'NOT_FOUND' } });
+      }
+  
+      // Delete from Cloudinary
+      await cloudinary.uploader.destroy(document.publicId, { resource_type: 'image' });
+  
+      // Remove document from User and StudentDocument
+      await User.updateOne({ _id: document.student }, { $pull: { documents: document._id } });
+      await document.deleteOne();
+  
+      res.json({ message: 'Document deleted successfully' });
+    } catch (error) {
+      console.error('❌ Error deleting document:', error);
+      res.status(500).json({ error: { message: 'Failed to delete document', code: 'SERVER_ERROR', details: error.message } });
+    }
+  });
+
+// Updated download route
+app.get('/api/student-documents/:documentId/download', verifyToken, isAdmin, async (req, res) => {
+    try {
+        const document = await StudentDocument.findById(req.params.documentId);
+        if (!document) {
+            return res.status(404).json({ error: { message: 'Document not found', code: 'NOT_FOUND' } });
+        }
+
+        // Determine filename based on document type
+        let filename;
+        if (document.fileName.includes('NIN')) {
+            filename = `NIN_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
+        } else if (document.fileName.includes('Admission')) {
+            filename = `Admission_Letter_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
+        } else if (document.fileName.includes('CGPA')) {
+            filename = `CGPA_Transcript_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
+        } else if (document.fileName.includes('JAMB')) {
+            filename = `JAMB_Admission_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
+        } else {
+            filename = document.fileName || `document_${document._id}.${document.fileUrl.split('.').pop()}`;
+        }
+
+        // Fetch the file from Cloudinary or storage
+        const response = await axios.get(document.fileUrl, { responseType: 'arraybuffer' });
+
+        // Set proper headers for download
+        res.set({
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Type': response.headers['content-type'],
+            'Content-Length': response.headers['content-length']
+        });
+
+        res.send(response.data);
+    } catch (error) {
+        console.error('❌ Error downloading document:', error);
+        res.status(500).json({ error: { message: 'Failed to download document', code: 'SERVER_ERROR', details: error.message } });
+    }
+});
 
 // Start Server
 const PORT = process.env.PORT || 3000;
