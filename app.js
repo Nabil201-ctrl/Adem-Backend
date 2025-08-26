@@ -13,10 +13,14 @@ import { v2 as cloudinary } from 'cloudinary';
 import path from 'path';
 import axios from 'axios';
 import stream from 'stream';
+import helmet from'helmet';
+import ratelimit from'express-rate-limit';
+
 dotenv.config();
 
 const app = express();
 
+app.use(helmet());
 app.use(cors({
     origin: '*', // Your frontend origin
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -25,6 +29,22 @@ app.use(cors({
     optionsSuccessStatus: 200
 }));
 app.use(express.json());
+
+const Limiter = ratelimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 10, // Limit each IP to 100 requests per windowMs
+    message: 'You have passed the request limit could you please return after 15min'
+})
+
+const Limiter2 = ratelimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 200, // Limit each IP to 100 requests per windowMs
+    message: 'You have passed the request limit could you please return after 15min'
+})
+
+app.use('/api/login', Limiter)
+app.use('/api/register', Limiter)
+app.use('/api', Limiter2)
 
 // Validate environment variables
 const requiredEnv = [
@@ -3026,308 +3046,6 @@ app.get('/auth/check', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
-/* // Update profile (name, email, avatar) (admin only)
-app.put(
-    '/profile',
-    verifyToken, isAdmin,
-    [
-        body('name').trim().notEmpty().withMessage('Name is required'),
-        body('email').isEmail().withMessage('Invalid email format'),
-    ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const { name, email } = req.body;
-
-        try {
-            const user = await User.findById(req.user.id);
-            if (!user) {
-                return res.status(404).json({ message: 'User not found' });
-            }
-
-            // Check if email is already in use by another user
-            if (email !== user.email) {
-                const emailExists = await User.findOne({ email });
-                if (emailExists) {
-                    return res.status(400).json({ message: 'Email already in use' });
-                }
-            }
-
-            user.name = name || user.name;
-            user.email = email || user.email;
-
-            // Handle profile picture upload
-            if (req.files && req.files.avatar) {
-                const file = req.files.avatar;
-                const uploadResult = await cloudinary.uploader.upload(file.tempFilePath, {
-                    folder: 'profile_pictures',
-                });
-                user.avatar = uploadResult.secure_url;
-            }
-
-            await user.save();
-
-            // Send email notification for profile update
-            await sendEmail({
-                to: user.email,
-                subject: 'Profile Updated',
-                text: `Hello ${user.name}, your profile has been successfully updated.`,
-            });
-
-            res.json({ message: 'Profile updated successfully', user: { name: user.name, email: user.email, avatar: user.avatar } });
-        } catch (error) {
-            res.status(500).json({ message: 'Server error' });
-        }
-    }
-);
-
-// Update notification preferences (admin only)
-app.put(
-    '/notifications',
-    verifyToken, isAdmin,
-    [
-        body('emailNotifications').isBoolean().withMessage('Invalid email notifications setting'),
-        body('newStudentNotifications').isBoolean().withMessage('Invalid new student notifications setting'),
-        body('maintenanceNotifications').isBoolean().withMessage('Invalid maintenance notifications setting'),
-    ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const { emailNotifications, newStudentNotifications, maintenanceNotifications } = req.body;
-
-        try {
-            const user = await User.findById(req.user.id);
-            if (!user) {
-                return res.status(404).json({ message: 'User not found' });
-            }
-
-            user.notifications = {
-                email: emailNotifications,
-                newStudent: newStudentNotifications,
-                maintenance: maintenanceNotifications,
-            };
-
-            await user.save();
-
-            // Send confirmation email if email notifications are enabled
-            if (emailNotifications) {
-                await sendEmail({
-                    to: user.email,
-                    subject: 'Notification Preferences Updated',
-                    text: `Hello ${user.name}, your notification preferences have been updated.`,
-                });
-            }
-
-            res.json({ message: 'Notification preferences saved' });
-        } catch (error) {
-            res.status(500).json({ message: 'Server error' });
-        }
-    }
-);
-
-// Update security settings (password, 2FA) (admin only)
-app.put(
-    '/security',
-    verifyToken, isAdmin,
-    [
-        body('currentPassword').notEmpty().withMessage('Current password is required'),
-        body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
-        body('twoFactorAuth').isBoolean().withMessage('Invalid 2FA setting'),
-    ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const { currentPassword, newPassword, twoFactorAuth } = req.body;
-
-        try {
-            const user = await User.findById(req.user.id);
-            if (!user) {
-                return res.status(404).json({ message: 'User not found' });
-            }
-
-            // Verify current password
-            const isMatch = await bcrypt.compare(currentPassword, user.password);
-            if (!isMatch) {
-                return res.status(400).json({ message: 'Current password is incorrect' });
-            }
-
-            // Update password if provided
-            if (newPassword) {
-                user.password = await bcrypt.hash(newPassword, 10);
-            }
-
-            // Update 2FA setting
-            user.security = { ...user.security, twoFactorAuth };
-
-            await user.save();
-
-            // Send email notification for security update
-            await sendEmail({
-                to: user.email,
-                subject: 'Security Settings Updated',
-                text: `Hello ${user.name}, your security settings have been updated. Two-factor authentication is now ${twoFactorAuth ? 'enabled' : 'disabled'}.`,
-            });
-
-            res.json({ message: 'Security settings updated' });
-        } catch (error) {
-            res.status(500).json({ message: 'Server error' });
-        }
-    }
-);
-
-// Update system preferences (language, timezone) (admin only)
-app.put(
-    '/system',
-    verifyToken, isAdmin,
-    [
-        body('language').isIn(['en', 'fr', 'es']).withMessage('Invalid language'),
-        body('timezone').isIn(['GMT+0', 'GMT+1', 'GMT+2']).withMessage('Invalid timezone'),
-    ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-
-        const { language, timezone } = req.body;
-
-        try {
-            const user = await User.findById(req.user.id);
-            if (!user) {
-                return res.status(404).json({ message: 'User not found' });
-            }
-
-            user.preferences = { language, timezone };
-            await user.save();
-
-            res.json({ message: 'System preferences saved' });
-        } catch (error) {
-            res.status(500).json({ message: 'Server error' });
-        }
-    }
-);
-
-// Nuke Data (Admin Only - Deletes all data from the database)
-app.post(
-    '/api/system-nuke-data',
-    verifyToken,
-    isAdmin,
-    [
-        body('confirmation').equals('NUKE_ALL_DATA').withMessage('Confirmation string must be "NUKE_ALL_DATA"'),
-        body('adminPassword').notEmpty().withMessage('Admin password is required')
-    ],
-    async (req, res) => {
-        try {
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({
-                    error: {
-                        message: 'Validation failed',
-                        details: errors.array(),
-                        code: 'VALIDATION_ERROR'
-                    }
-                });
-            }
-
-            const { adminPassword } = req.body;
-
-            // Verify admin password
-            const admin = await User.findById(req.user.id).select('+password');
-            const isMatch = await bcrypt.compare(adminPassword, admin.password);
-            if (!isMatch) {
-                return res.status(401).json({
-                    error: {
-                        message: 'Invalid admin password',
-                        code: 'INVALID_CREDENTIALS'
-                    }
-                });
-            }
-
-            // Start a MongoDB session for atomic operations
-            const session = await mongoose.startSession();
-            try {
-                await session.withTransaction(async () => {
-                    // Delete all documents from all collections
-                    await User.deleteMany({}, { session });
-                    await Room.deleteMany({}, { session });
-                    await Event.deleteMany({}, { session });
-                    await Maintenance.deleteMany({}, { session });
-                    await Settings.deleteMany({}, { session });
-                    await Payment.deleteMany({}, { session });
-                    await PaymentSlip.deleteMany({}, { session });
-                    await RegistrationDeadline.deleteMany({}, { session });
-                    await Notification.deleteMany({}, { session });
-
-                    // Delete all files from Cloudinary in the relevant folders
-                    try {
-                        await cloudinary.api.delete_resources_by_prefix('payment-slips', {
-                            resource_type: 'image'
-                        });
-                        await cloudinary.api.delete_resources_by_prefix('payment-slips', {
-                            resource_type: 'raw'
-                        });
-                        await cloudinary.api.delete_resources_by_prefix('profile_pictures', {
-                            resource_type: 'image'
-                        });
-                    } catch (cloudinaryError) {
-                        console.error('❌ Cloudinary Cleanup Error:', cloudinaryError);
-                        // Continue with database cleanup even if Cloudinary fails
-                    }
-                });
-
-                // Send email to all admins notifying about the data deletion
-                const admins = await User.find({ userType: 'admin' });
-                for (const admin of admins) {
-                    await sendEmail(
-                        admin.email,
-                        'Adem Baba – System Data Nuked',
-                        `Hello ${admin.name}, the Adem Baba system data has been completely deleted by ${req.user.email} on ${new Date().toLocaleString()}. All user data, rooms, events, payments, and related records have been removed. This action is irreversible.`,
-                        `
-                        <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
-                            <h2 style="color: #c0392b;">⚠️ System Data Nuked</h2>
-                            <p>Hi <strong>${admin.name}</strong>,</p>
-                            <p>The Adem Baba system data has been completely deleted by <strong>${req.user.email}</strong> on <strong>${new Date().toLocaleString()}</strong>.</p>
-                            <p>All records including users, rooms, events, payments, and related data have been permanently removed. This action is irreversible.</p>
-                            <hr style="margin: 20px 0;" />
-                            <p style="font-size: 12px; color: #666;">If you believe this was unauthorized, please contact the system administrator immediately.</p>
-                        </div>
-                        `
-                    ).catch((emailError) => {
-                        console.error('❌ Email Notification Error:', emailError);
-                    });
-                }
-
-                console.log(`System data nuked by admin ${req.user.email} at ${new Date().toLocaleString()}`);
-                res.json({ message: 'All system data has been successfully deleted' });
-            } finally {
-                session.endSession();
-            }
-        } catch (error) {
-            console.error('❌ Nuke Data Error:', error);
-            res.status(500).json({
-                error: {
-                    message: 'Failed to nuke system data',
-                    code: 'SERVER_ERROR',
-                    details: error.message
-                }
-            });
-        }
-    }
-);
- */
-
-
-/* SETTINGS ROTUES*/
-// Get user settings
 
 // Nuke system data
 app.delete('/api/settings/nuke', verifyToken, isAdmin, async (req, res) => {
@@ -3878,6 +3596,7 @@ app.get('/api/student-documents/:documentId/download', verifyToken, isAdmin, asy
 
 // Start Server
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
 });
