@@ -55,7 +55,8 @@ const requiredEnv = [
     'CLOUDINARY_CLOUD_NAME',
     'CLOUDINARY_API_KEY',
     'CLOUDINARY_API_SECRET',
-    'ADMIN_SECRET_KEY'
+    'ADMIN_SECRET_KEY',
+    'FRONTEND_URL'
 ];
 for (const env of requiredEnv) {
     if (!process.env[env]) {
@@ -64,6 +65,7 @@ for (const env of requiredEnv) {
     }
 }
 
+const frontend = process.env.FRONTEND_URL;
 
 // NEW: Configure Cloudinary
 cloudinary.config({
@@ -855,7 +857,7 @@ app.post(
             student.status = 'Approved';
             await student.save();
 
-            const frontendUrl = 'https://adem-baba.vercel.app/login-form/verify-otp.html';
+            const frontendUrl = `${frontend}/login-form/verify-otp.html`;
             await sendEmail(
                 student.email,
                 'Adem Baba – Your One-Time Password (OTP)',
@@ -1270,6 +1272,9 @@ app.post(
                 </ul>
                 <p>📎 Please refer to the attached document for interview guidelines and expectations.</p>
                 <p>📎 Download the welcome guide(s):</p>
+                <p>📎 The payment will be made to the hostel account which will be specified by the admin and the slip will be uploaded through the website</p>
+                <p> After you have made the transfer to the account, go to the login page fill in your login details you will be redirected to uplaod the payment slip after the process has completed message the admin and wait for a comfirmation email, then you may procced to your dashobard</p>
+                <p>📎 All the document listed here shoulb filled printed and taken with you to the interview </p>
                 <ul style="padding-left: 20px; line-height: 1.6;">
                   ${pdfLinksHtml}
                 </ul>
@@ -1296,7 +1301,11 @@ app.post(
                   <li><strong>Time:</strong> ${interviewTime}</li>
                   <li><strong>Location:</strong> Adem Baba Hostel Office</li>
                 </ul>
+                
                 <p>Please ensure you arrive a few minutes early and bring any necessary documents.</p>
+                <p>📎 The payment will be made to the hostel account which will be specified by the admin and the slip will be uploaded through the website</p>
+                <p> After you have made the transfer to the account, go to the login page fill in your login details you will be redirected to uplaod the payment slip after the process has completed message the admin and wait for a comfirmation email, then you may procced to your dashobard</p>
+                <p>📎 All the document listed here shoulb filled printed and taken with you to the interview </p>
                 <p>📎 Download the welcome guide(s):</p>
                 <ul style="padding-left: 20px; line-height: 1.6;">
                   ${pdfLinksHtml}
@@ -1437,6 +1446,7 @@ app.post(
             });
             await payment.save();
 
+            let frontendUrl = `${frontend}/students/index.html`
             await sendEmail(
                 paymentSlip.student.email,
                 'Adem Baba – Payment Slip Approved',
@@ -1501,9 +1511,9 @@ app.post(
         <p>Hi <strong>${paymentSlip.student.name}</strong>,</p>
         <p>We’ve reviewed your payment slip for <strong>₦${paymentSlip.amount.toLocaleString()}</strong> and found it to be invalid or unclear.</p>
         <p>Please upload a valid and clearly visible payment slip in your dashboard to continue the process.</p>
-        <p>
+/*         <p>
             <a href="${frontendUrl}" style="display: inline-block; background-color: #c0392b; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Upload New Slip</a>
-        </p>
+        </p> */
         <hr style="margin: 20px 0;" />
         <p style="font-size: 12px; color: #666;">If you believe this was an error, please contact support for clarification.</p>
     </div>
@@ -1816,7 +1826,7 @@ app.post(
                     }
                 );
 
-                const resetUrl = `https://adem-baba.vercel.app/login-form/reset-password.html?token=${resetToken}`;
+                const resetUrl = `${frontend}login-form/reset-password.html?token=${resetToken}`;
                 await sendEmail(
                     email,
                     'Adem Baba – Password Reset Instructions',
@@ -2728,7 +2738,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         await user.save();
 
         // Send email
-        const resetUrl = `https://adem-baba.vercel.app.com/apilogin-form/reset-password.html?token=${token}`;
+        const resetUrl = `${frontend}apilogin-form/reset-password.html?token=${token}`;
         console.log(resetUrl)
         await sendEmail(
             email,
@@ -2879,17 +2889,20 @@ app.post(
         try {
             const errors = validationResult(req);
             if (!errors.isEmpty()) {
-                console.log('Validation errors for set deadline:', errors.array());
-                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
+                return res.status(400).json({ 
+                    error: { 
+                        message: 'Validation failed', 
+                        details: errors.array(), 
+                        code: 'VALIDATION_ERROR' 
+                    } 
+                });
             }
 
             const { deadline } = req.body;
             const deadlineDate = new Date(deadline);
-            console.log('Attempting to set deadline:', { deadline, admin: req.user.email });
 
             // Delete existing deadlines
-            const deleteResult = await RegistrationDeadline.deleteMany({});
-            console.log('Deleted existing deadlines:', deleteResult);
+            await RegistrationDeadline.deleteMany({});
 
             // Create new deadline
             const newDeadline = new RegistrationDeadline({
@@ -2901,17 +2914,25 @@ app.post(
             });
 
             const savedDeadline = await newDeadline.save();
-            console.log('New deadline saved:', savedDeadline);
-
-            res.json({ message: 'Registration deadline set successfully', deadline: savedDeadline });
+            res.json({ 
+                message: 'Registration deadline set successfully', 
+                deadline: savedDeadline 
+            });
         } catch (error) {
             console.error('❌ Set Deadline Error:', error);
-            res.status(500).json({ error: { message: 'Failed to set deadline', code: 'SERVER_ERROR', details: error.message } });
+            res.status(500).json({ 
+                error: { 
+                    message: 'Failed to set deadline', 
+                    code: 'SERVER_ERROR', 
+                    details: error.message 
+                } 
+            });
         }
     }
 );
 
-app.patch(
+// Change from PATCH to POST for consistency
+app.post(
     '/api/registration-deadline/extend',
     verifyToken,
     isAdmin,
@@ -2923,6 +2944,7 @@ app.patch(
                 const extendedDeadline = new Date(value);
                 const now = new Date();
                 const currentDeadline = await RegistrationDeadline.findOne({});
+                
                 if (!currentDeadline) {
                     throw new Error('No registration deadline found');
                 }
@@ -2939,13 +2961,17 @@ app.patch(
         try {
             const errors = validationResult(req);
             if (!errors.isEmpty()) {
-                console.log('Validation errors for extend deadline:', errors.array());
-                return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
+                return res.status(400).json({ 
+                    error: { 
+                        message: 'Validation failed', 
+                        details: errors.array(), 
+                        code: 'VALIDATION_ERROR' 
+                    } 
+                });
             }
 
             const { extendedDeadline } = req.body;
             const extendedDeadlineDate = new Date(extendedDeadline);
-            console.log('Attempting to extend deadline:', { extendedDeadline, admin: req.user.email });
 
             const result = await RegistrationDeadline.updateOne(
                 {},
@@ -2959,17 +2985,28 @@ app.patch(
             );
 
             if (result.matchedCount === 0) {
-                console.log('No deadline found to extend');
-                return res.status(404).json({ error: { message: 'No deadline found to extend', code: 'NOT_FOUND' } });
+                return res.status(404).json({ 
+                    error: { 
+                        message: 'No deadline found to extend', 
+                        code: 'NOT_FOUND' 
+                    } 
+                });
             }
 
             const updatedDeadline = await RegistrationDeadline.findOne({});
-            console.log('Deadline extended:', updatedDeadline);
-
-            res.json({ message: 'Registration deadline extended successfully', deadline: updatedDeadline });
+            res.json({ 
+                message: 'Registration deadline extended successfully', 
+                deadline: updatedDeadline 
+            });
         } catch (error) {
             console.error('❌ Extend Deadline Error:', error);
-            res.status(500).json({ error: { message: 'Failed to extend deadline', code: 'SERVER_ERROR', details: error.message } });
+            res.status(500).json({ 
+                error: { 
+                    message: 'Failed to extend deadline', 
+                    code: 'SERVER_ERROR', 
+                    details: error.message 
+                } 
+            });
         }
     }
 );
@@ -2996,7 +3033,12 @@ app.get(
             });
         } catch (error) {
             console.error('❌ Get Registration Deadline Error:', error);
-            res.status(500).json({ error: { message: 'Failed to get registration deadline', code: 'SERVER_ERROR' } });
+            res.status(500).json({ 
+                error: { 
+                    message: 'Failed to get registration deadline', 
+                    code: 'SERVER_ERROR' 
+                } 
+            });
         }
     }
 );
