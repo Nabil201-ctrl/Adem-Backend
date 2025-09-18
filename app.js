@@ -778,7 +778,7 @@ app.post(
               <p><strong>Email:</strong> ${email}</p>
               <p><strong>Matric Number:</strong> ${matricNumber}</p>
               <p><strong>Documents Uploaded:</strong> ${jambOrCgpaType}, Admission Letter, NIN</p>
-              <p><a href="https://adem-baba.vercel.app/admin/student-documents" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Review Documents</a></p>
+              <p><a href="${frontend}/admin/student-documents" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Review Documents</a></p>
               <hr style="margin: 20px 0;" />
               <p style="font-size: 12px; color: #666;">Please take appropriate action in the Admin Dashboard.</p>
           </div>
@@ -873,6 +873,9 @@ app.post(
         <p>
             <a href="${frontendUrl}" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold;">Verify OTP</a>
         </p>
+        <hr style="margin: 20px 0;">
+        <p>📎 The payment will be made to the hostel account which will be specified by the admin and the slip will be uploaded through the website</p>
+                <p> After you have made the transfer to the account, go to the login page fill in your login details you will be redirected to uplaod the payment slip after the process has completed message the admin and wait for a comfirmation email, then you may procced to your dashobard</p>
         <hr style="margin: 20px 0;" />
         <p style="font-size: 12px; color: #666;">If you did not request this, please ignore this message.</p>
     </div>
@@ -1270,11 +1273,10 @@ app.post(
                   <li><strong>Time:</strong> ${interviewTime}</li>
                   <li><strong>Location:</strong> Adem Baba Hostel Office</li>
                 </ul>
-                <p>📎 Please refer to the attached document for interview guidelines and expectations.</p>
-                <p>📎 Download the welcome guide(s):</p>
+                <p>📎 Download the documents print and fill the necessary information(s):</p>
                 <p>📎 The payment will be made to the hostel account which will be specified by the admin and the slip will be uploaded through the website</p>
                 <p> After you have made the transfer to the account, go to the login page fill in your login details you will be redirected to uplaod the payment slip after the process has completed message the admin and wait for a comfirmation email, then you may procced to your dashobard</p>
-                <p>📎 All the document listed here shoulb filled printed and taken with you to the interview </p>
+                <p>📎 <strong>NOTE: </strong>All the document listed here should filled printed and taken with you to the interview </p>
                 <ul style="padding-left: 20px; line-height: 1.6;">
                   ${pdfLinksHtml}
                 </ul>
@@ -1695,7 +1697,7 @@ app.post(
             student.status = 'Approved';
             await student.save();
 
-            const frontendUrl = 'http://127.0.0.1:5500/login-form/verify-otp.html';
+            const frontendUrl = `${frontend}/login-form/verify-otp.html`;
 
             // Fetch all welcome documents
             const welcomeDocs = await WelcomeDocument.find({ pdfUrl: { $exists: true, $ne: '' } }).sort({ updatedAt: -1 });
@@ -1826,7 +1828,7 @@ app.post(
                     }
                 );
 
-                const resetUrl = `${frontend}login-form/reset-password.html?token=${resetToken}`;
+                const resetUrl = `${frontend}/login-form/reset-password.html?token=${resetToken}`;
                 await sendEmail(
                     email,
                     'Adem Baba – Password Reset Instructions',
@@ -2738,7 +2740,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         await user.save();
 
         // Send email
-        const resetUrl = `${frontend}apilogin-form/reset-password.html?token=${token}`;
+        const resetUrl = `${frontend}/apilogin-form/reset-password.html?token=${token}`;
         console.log(resetUrl)
         await sendEmail(
             email,
