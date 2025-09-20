@@ -16,6 +16,7 @@ import stream from 'stream';
 import helmet from'helmet';
 import ratelimit from'express-rate-limit';
 
+dotenv.config();
 // Validate environment variables
 const requiredEnv = [
     'MONGO_URI',
@@ -37,7 +38,6 @@ for (const env of requiredEnv) {
 
 const frontend = process.env.FRONTEND_URL;
 
-dotenv.config();
 
 const app = express(); 
 app.set('trust proxy', 1);
