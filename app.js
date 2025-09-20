@@ -16,13 +16,35 @@ import stream from 'stream';
 import helmet from'helmet';
 import ratelimit from'express-rate-limit';
 
+// Validate environment variables
+const requiredEnv = [
+    'MONGO_URI',
+    'JWT_SECRET',
+    'GMAIL_USER',
+    'GMAIL_PASS',
+    'CLOUDINARY_CLOUD_NAME',
+    'CLOUDINARY_API_KEY',
+    'CLOUDINARY_API_SECRET',
+    'ADMIN_SECRET_KEY',
+    'FRONTEND_URL'
+];
+for (const env of requiredEnv) {
+    if (!process.env[env]) {
+        console.error(`❌ Missing environment variable: ${env}`);
+        process.exit(1);
+    }
+}
+
+const frontend = process.env.FRONTEND_URL;
+
 dotenv.config();
 
-const app = express();
+const app = express(); 
+app.set('trust proxy', 1);
 
 app.use(helmet());
 app.use(cors({
-    origin: '*', // Your frontend origin
+    origin: `${frontend}`, // Your frontend origin
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
@@ -46,26 +68,6 @@ app.use('/api/login', Limiter)
 app.use('/api/register', Limiter)
 app.use('/api', Limiter2)
 
-// Validate environment variables
-const requiredEnv = [
-    'MONGO_URI',
-    'JWT_SECRET',
-    'GMAIL_USER',
-    'GMAIL_PASS',
-    'CLOUDINARY_CLOUD_NAME',
-    'CLOUDINARY_API_KEY',
-    'CLOUDINARY_API_SECRET',
-    'ADMIN_SECRET_KEY',
-    'FRONTEND_URL'
-];
-for (const env of requiredEnv) {
-    if (!process.env[env]) {
-        console.error(`❌ Missing environment variable: ${env}`);
-        process.exit(1);
-    }
-}
-
-const frontend = process.env.FRONTEND_URL;
 
 // NEW: Configure Cloudinary
 cloudinary.config({
