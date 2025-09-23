@@ -583,7 +583,7 @@ app.post(
 );
 
 
-//Registeration route
+// Registration route - FIXED VERSION
 app.post(
     '/api/register',
     uploadDocuments,
@@ -696,10 +696,27 @@ app.post(
           }
         }
   
-        // Check for existing user
-        const existingUser = await User.findOne({ $or: [{ email }, { matricNumber: matricNumber || null }] });
+        // FIXED: Check for existing user - only check matricNumber for students
+        let existingUser;
+        if (userType === 'student') {
+          // For students, check both email and matric number
+          existingUser = await User.findOne({ 
+            $or: [{ email }, { matricNumber }] 
+          });
+        } else {
+          // For admins, only check email (admins don't have matric numbers)
+          existingUser = await User.findOne({ email });
+        }
+        
         if (existingUser) {
-          return res.status(400).json({ error: { message: 'Email or matric number already exists', code: 'DUPLICATE' } });
+          return res.status(400).json({ 
+            error: { 
+              message: userType === 'student' 
+                ? 'Email or matric number already exists' 
+                : 'Email already exists', 
+              code: 'DUPLICATE' 
+            } 
+          });
         }
   
         // Hash password
@@ -711,17 +728,24 @@ app.post(
           email,
           password: hashedPassword,
           userType,
-          matricNumber: userType === 'student' ? matricNumber : undefined,
-          phone: userType === 'student' ? phone : undefined,
-          gender: userType === 'student' ? gender : undefined,
-          dateOfBirth: userType === 'student' ? dateOfBirth : undefined,
-          faculty: userType === 'student' ? faculty : undefined,
-          level: userType === 'student' ? level : undefined,
-          department: userType === 'student' ? department : undefined,
-          status: userType === 'student' ? 'Pending' : 'Approved',
+          // Only include student-specific fields for students
+          ...(userType === 'student' && {
+            matricNumber,
+            phone,
+            gender,
+            dateOfBirth,
+            faculty,
+            level,
+            department,
+            status: 'Pending',
+          }),
+          // For admins, set status to Approved
+          ...(userType === 'admin' && {
+            status: 'Approved',
+          }),
         });
   
-        // Handle document uploads for students
+        // Handle document uploads for students only
         let documents = [];
         if (userType === 'student') {
           const files = req.files;
@@ -825,7 +849,6 @@ app.post(
       }
     }
 );
-
 
 
 
