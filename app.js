@@ -3620,8 +3620,8 @@ app.get('/api/student-documents/download/:documentId', verifyToken, isAdmin, asy
       res.json({ message: 'Document deleted successfully' });
     } catch (error) {
       console.error('❌ Error deleting document:', error);
-      res.status(500).json({ error: { message: 'Failed to delete document', code: 'SERVER_ERROR', details: error.message } });
-    }
+      res.status(500).json({ error: { message: 'Failed to delete document', code: 'SERVER_ERROR', dxetails: error.message } });
+    } 
   });
 
 // Updated download route
