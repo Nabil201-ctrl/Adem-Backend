@@ -111,8 +111,8 @@ const documentStorage = new CloudinaryStorage({
         folder = req.body.jambOrCgpaType === 'JAMB_RESULT' ? 'jamb_result' : 'cgpa';
       } else if (file.fieldname === 'admissionLetter') {
         folder = 'admission_letter';
-      } else if (file.fieldname === 'nin') {
-        folder = 'nin';
+      } else if (file.fieldname === 'fees') {
+        folder = 'fees';
       }
       return {
         folder: `adem_baba/documents/${folder}`,
@@ -140,7 +140,7 @@ const documentStorage = new CloudinaryStorage({
   }).fields([
     { name: 'jambOrCgpa', maxCount: 1 },
     { name: 'admissionLetter', maxCount: 1 },
-    { name: 'nin', maxCount: 1 },
+    { name: 'fees', maxCount: 1 },
   ]);
 
 
@@ -354,7 +354,7 @@ const StudentDocumentSchema = new mongoose.Schema({
     },
     documentType: {
       type: String,
-      enum: ['JAMB_RESULT', 'CGPA', 'ADMISSION_LETTER', 'NIN'],
+      enum: ['JAMB_RESULT', 'CGPA', 'ADMISSION_LETTER', 'FEES'],
       required: true, 
     },
     fileUrl: {
@@ -643,8 +643,8 @@ app.post(
         // Validate file uploads for students
         if (userType === 'student') {
           const files = req.files;
-          if (!files.jambOrCgpa || !files.admissionLetter || !files.nin) {
-            return res.status(400).json({ error: { message: 'JAMB/CGPA, Admission Letter, and NIN images are required', code: 'NO_FILE' } });
+          if (!files.jambOrCgpa || !files.admissionLetter || !files.fees) {
+            return res.status(400).json({ error: { message: 'JAMB/CGPA, Admission Letter, and FEES images are required', code: 'NO_FILE' } });
           }
         }
   
@@ -752,7 +752,7 @@ app.post(
           const documentData = [
             { file: files.jambOrCgpa[0], type: jambOrCgpaType },
             { file: files.admissionLetter[0], type: 'ADMISSION_LETTER' },
-            { file: files.nin[0], type: 'NIN' },
+            { file: files.fees[0], type: 'FEES' },
           ];
   
           try {
@@ -803,7 +803,7 @@ app.post(
               <p><strong>Student:</strong> ${name}</p>
               <p><strong>Email:</strong> ${email}</p>
               <p><strong>Matric Number:</strong> ${matricNumber}</p>
-              <p><strong>Documents Uploaded:</strong> ${jambOrCgpaType}, Admission Letter, NIN</p>
+              <p><strong>Documents Uploaded:</strong> ${jambOrCgpaType}, Admission Letter, FEES</p>
               <p><a href="${frontend}/admin/student-documents" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Review Documents</a></p>
               <hr style="margin: 20px 0;" />
               <p style="font-size: 12px; color: #666;">Please take appropriate action in the Admin Dashboard.</p>
@@ -839,7 +839,7 @@ app.post(
           const publicIds = [
             files.jambOrCgpa?.[0]?.filename,
             files.admissionLetter?.[0]?.filename,
-            files.nin?.[0]?.filename,
+            files.fees?.[0]?.filename,
           ].filter(Boolean);
           await Promise.all(
             publicIds.map((id) => cloudinary.uploader.destroy(id, { resource_type: 'image' }))
@@ -3635,7 +3635,7 @@ app.get('/api/student-documents/:documentId/download', verifyToken, isAdmin, asy
         // Determine filename based on document type
         let filename;
         if (document.fileName.includes('NIN')) {
-            filename = `NIN_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
+            filename = `FEES_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
         } else if (document.fileName.includes('Admission')) {
             filename = `Admission_Letter_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
         } else if (document.fileName.includes('CGPA')) {
