@@ -111,8 +111,8 @@ const documentStorage = new CloudinaryStorage({
         folder = req.body.jambOrCgpaType === 'JAMB_RESULT' ? 'jamb_result' : 'cgpa';
       } else if (file.fieldname === 'admissionLetter') {
         folder = 'admission_letter';
-      } else if (file.fieldname === 'fees') {
-        folder = 'fees';
+      } else if (file.fieldname === 'nin') {
+        folder = 'nin';
       }
       return {
         folder: `adem_baba/documents/${folder}`,
@@ -140,7 +140,7 @@ const documentStorage = new CloudinaryStorage({
   }).fields([
     { name: 'jambOrCgpa', maxCount: 1 },
     { name: 'admissionLetter', maxCount: 1 },
-    { name: 'fees', maxCount: 1 },
+    { name: 'nin', maxCount: 1 },
   ]);
 
 
@@ -157,6 +157,8 @@ async function connectDB() {
 connectDB();
 
 // Schemas
+
+
 const UserSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, index: true, lowercase: true },
@@ -174,15 +176,9 @@ const UserSchema = new mongoose.Schema({
         match: /^\+?[\d\s()-]{10,}$/,
         required: function () { return this.userType === 'student'; }
     },
-    // NEW: Guardian phone number field
-    guardianPhone: {
-        type: String,
-        match: /^\+?[\d\s()-]{10,}$/,
-        required: function () { return this.userType === 'student'; }
-    },
     gender: {
         type: String,
-        enum: ['Male', 'Female'],
+        enum: ['Male'],
         required: function () { return this.userType === 'student'; }
     },
     dateOfBirth: {
@@ -204,39 +200,6 @@ const UserSchema = new mongoose.Schema({
         trim: true,
         required: function () { return this.userType === 'student'; }
     },
-    // NEW: Score type field to track which score was submitted
-    scoreType: {
-        type: String,
-        enum: ['jamb', 'cgpa'],
-        required: function () { return this.userType === 'student'; }
-    },
-    jambScore: {
-        type: Number,
-        min: 0,
-        max: 400,
-        required: function() { 
-            return this.userType === 'student' && this.scoreType === 'jamb'; 
-        }
-    },
-    cgpa: {
-        type: Number,
-        min: 0,
-        max: 5,
-        required: function() { 
-            return this.userType === 'student' && this.scoreType === 'cgpa'; 
-        }
-    },
-    // NEW: Health status fields
-    healthStatus: {
-        type: String,
-        enum: ['Excellent', 'Good', 'Fair', 'Poor', 'Other'],
-        required: function () { return this.userType === 'student'; }
-    },
-    healthComments: {
-        type: String,
-        trim: true,
-        required: false
-    },
     room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room' },
     status: { type: String, enum: ['Pending', 'Approved', 'Declined'], default: 'Pending' },
     otp: { type: String },
@@ -246,28 +209,29 @@ const UserSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
+    avatar: { type: String, default: '' }, // Profile picture URL
     notifications: {
-        email: { type: Boolean, default: true },
-        newStudent: { type: Boolean, default: true },
-        maintenance: { type: Boolean, default: false }
+        email: { type: Boolean, default: true }, // Email notifications for payments
+        newStudent: { type: Boolean, default: true }, // Notifications for new student registrations
+        maintenance: { type: Boolean, default: false } // Notifications for system maintenance
     },
     documents: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'StudentDocument',
-    }],
+      }],
     security: {
-        twoFactorAuth: { type: Boolean, default: false },
-        twoFactorSecret: { type: String }
+        twoFactorAuth: { type: Boolean, default: false }, // 2FA setting
+        twoFactorSecret: { type: String } // Optional: for storing 2FA secret if implementing TOTP
     },
     preferences: {
-        language: { type: String, enum: ['en', 'fr', 'es'], default: 'en' },
-        timezone: { type: String, enum: ['GMT+0', 'GMT+1', 'GMT+2'], default: 'GMT+1' }
+        language: { type: String, enum: ['en', 'fr', 'es'], default: 'en' }, // Language preference
+        timezone: { type: String, enum: ['GMT+0', 'GMT+1', 'GMT+2'], default: 'GMT+1' } // Timezone preference
     },
     avatar: {
-        url: { type: String, default: '' },
-        publicId: { type: String, default: '' }
+        url: { type: String, default: '' }, // Cloudinary URL
+        publicId: { type: String, default: '' } // Cloudinary public ID for deletion
     }
-}, { timestamps: true });
+},{timestamps:true});
 
 
 const RoomSchema = new mongoose.Schema({
@@ -390,7 +354,7 @@ const StudentDocumentSchema = new mongoose.Schema({
     },
     documentType: {
       type: String,
-      enum: ['FEES'],
+      enum: ['JAMB_RESULT', 'CGPA', 'ADMISSION_LETTER', 'NIN'],
       required: true, 
     },
     fileUrl: {
@@ -411,7 +375,6 @@ const StudentDocumentSchema = new mongoose.Schema({
       default: Date.now,
     },
 }, { timestamps: true });
-
   
 
 
@@ -620,10 +583,10 @@ app.post(
 );
 
 
-
+// Registration route - FIXED VERSION
 app.post(
     '/api/register',
-    uploadDocuments, // Now only uploads fees receipt
+    uploadDocuments,
     handleMulterError,
     [
       body('email').isEmail().withMessage('Invalid email format'),
@@ -633,8 +596,6 @@ app.post(
       body('adminSecretKey')
         .if(body('userType').equals('admin'))
         .notEmpty().withMessage('Admin secret key is required for admin registration'),
-      
-      // Student-specific validations
       body('matricNumber')
         .if(body('userType').equals('student'))
         .notEmpty().withMessage('Matric number is required for students')
@@ -643,14 +604,9 @@ app.post(
         .if(body('userType').equals('student'))
         .notEmpty().withMessage('Phone number is required for students')
         .matches(/^\+?[\d\s()-]{10,}$/).withMessage('Invalid phone number format'),
-      // NEW: Guardian phone validation
-      body('guardianPhone')
-        .if(body('userType').equals('student'))
-        .notEmpty().withMessage('Guardian phone number is required for students')
-        .matches(/^\+?[\d\s()-]{10,}$/).withMessage('Invalid guardian phone number format'),
       body('gender')
         .if(body('userType').equals('student'))
-        .isIn(['Male', 'Female']).withMessage('Invalid gender'),
+        .isIn(['Male', 'Female', 'Other']).withMessage('Invalid gender'),
       body('dateOfBirth')
         .if(body('userType').equals('student'))
         .isISO8601().toDate().withMessage('Invalid date of birth')
@@ -671,55 +627,9 @@ app.post(
       body('department')
         .if(body('userType').equals('student'))
         .trim().notEmpty().withMessage('Department is required for students'),
-      
-      // NEW: Score type validation
-      body('scoreType')
+      body('jambOrCgpaType')
         .if(body('userType').equals('student'))
-        .isIn(['jamb', 'cgpa']).withMessage('Invalid score type'),
-      
-      // JAMB score validation - only for 100-level students with jamb score type
-      body('jambScore')
-        .if(body('userType').equals('student'))
-        .custom((value, { req }) => {
-          if (req.body.scoreType === 'jamb') {
-            if (!value) {
-              throw new Error('JAMB score is required when score type is jamb');
-            }
-            if (parseFloat(value) < 0 || parseFloat(value) > 400) {
-              throw new Error('JAMB score must be between 0 and 400');
-            }
-            // Check if student is 100-level
-            if (req.body.level && req.body.level !== '100level') {
-              throw new Error('JAMB score is only allowed for 100-level students');
-            }
-          }
-          return true;
-        }),
-      
-      // CGPA validation - only for non-100-level students with cgpa score type
-      body('cgpa')
-        .if(body('userType').equals('student'))
-        .custom((value, { req }) => {
-          if (req.body.scoreType === 'cgpa') {
-            if (!value) {
-              throw new Error('CGPA is required when score type is cgpa');
-            }
-            if (parseFloat(value) < 0 || parseFloat(value) > 5) {
-              throw new Error('CGPA must be between 0 and 5');
-            }
-          }
-          return true;
-        }),
-      
-      // NEW: Health status validation
-      body('healthStatus')
-        .if(body('userType').equals('student'))
-        .isIn(['Excellent', 'Good', 'Fair', 'Poor', 'Other']).withMessage('Invalid health status'),
-      body('healthComments')
-        .if(body('userType').equals('student'))
-        .optional()
-        .trim()
-        .isLength({ max: 500 }).withMessage('Health comments must not exceed 500 characters'),
+        .isIn(['JAMB_RESULT', 'CGPA']).withMessage('Must specify JAMB_RESULT or CGPA'),
     ],
     async (req, res) => {
       try {
@@ -728,32 +638,13 @@ app.post(
           return res.status(400).json({ error: { message: 'Validation failed', details: errors.array(), code: 'VALIDATION_ERROR' } });
         }
   
-        const { 
-          email, 
-          password, 
-          userType, 
-          name, 
-          adminSecretKey, 
-          matricNumber, 
-          phone, 
-          guardianPhone, // NEW: Guardian phone
-          gender, 
-          dateOfBirth, 
-          faculty, 
-          level, 
-          department, 
-          scoreType, // NEW: Score type
-          jambScore, 
-          cgpa, 
-          healthStatus, 
-          healthComments 
-        } = req.body;
+        const { email, password, userType, name, adminSecretKey, matricNumber, phone, gender, dateOfBirth, faculty, level, department, jambOrCgpaType } = req.body;
   
-        // Validate file uploads for students - now only fees receipt is required
+        // Validate file uploads for students
         if (userType === 'student') {
           const files = req.files;
-          if (!files.fees) {
-            return res.status(400).json({ error: { message: 'School fees receipt is required', code: 'NO_FILE' } });
+          if (!files.jambOrCgpa || !files.admissionLetter || !files.nin) {
+            return res.status(400).json({ error: { message: 'JAMB/CGPA, Admission Letter, and NIN images are required', code: 'NO_FILE' } });
           }
         }
   
@@ -805,13 +696,15 @@ app.post(
           }
         }
   
-        // Check for existing user
+        // FIXED: Check for existing user - only check matricNumber for students
         let existingUser;
         if (userType === 'student') {
+          // For students, check both email and matric number
           existingUser = await User.findOne({ 
             $or: [{ email }, { matricNumber }] 
           });
         } else {
+          // For admins, only check email (admins don't have matric numbers)
           existingUser = await User.findOne({ email });
         }
         
@@ -829,58 +722,64 @@ app.post(
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
   
-        // Create user with new fields
+        // Create user
         const user = new User({
           name,
           email,
           password: hashedPassword,
           userType,
+          // Only include student-specific fields for students
           ...(userType === 'student' && {
             matricNumber,
             phone,
-            guardianPhone, // NEW: Guardian phone
             gender,
             dateOfBirth,
             faculty,
             level,
             department,
-            scoreType, // NEW: Score type
-            jambScore: scoreType === 'jamb' && jambScore ? parseFloat(jambScore) : undefined,
-            cgpa: scoreType === 'cgpa' && cgpa ? parseFloat(cgpa) : undefined,
-            healthStatus,
-            healthComments,
             status: 'Pending',
           }),
+          // For admins, set status to Approved
           ...(userType === 'admin' && {
             status: 'Approved',
           }),
         });
   
-        // Handle document uploads for students only - now only fees receipt
+        // Handle document uploads for students only
         let documents = [];
         if (userType === 'student') {
           const files = req.files;
-          
+          const documentData = [
+            { file: files.jambOrCgpa[0], type: jambOrCgpaType },
+            { file: files.admissionLetter[0], type: 'ADMISSION_LETTER' },
+            { file: files.nin[0], type: 'NIN' },
+          ];
+  
           try {
-            // Only upload fees receipt
-            if (files.fees && files.fees[0]) {
-              const feesDoc = new StudentDocument({
-                student: user._id,
-                documentType: 'FEES',
-                fileUrl: files.fees[0].path,
-                publicId: files.fees[0].filename,
-                fileType: files.fees[0].mimetype,
-              });
-              await feesDoc.save();
-              documents.push(feesDoc);
-            }
+            documents = await Promise.all(
+              documentData.map(async ({ file, type }) => {
+                console.log(`Cloudinary upload response for ${type}:`, file);
+                const doc = new StudentDocument({
+                  student: user._id,
+                  documentType: type,
+                  fileUrl: file.path,
+                  publicId: file.filename,
+                  fileType: file.mimetype,
+                });
+                await doc.save();
+                return doc;
+              })
+            );
   
             user.documents = documents.map(doc => doc._id);
           } catch (error) {
             // Clean up Cloudinary files on error
-            if (files.fees && files.fees[0] && files.fees[0].filename) {
-              await cloudinary.uploader.destroy(files.fees[0].filename, { resource_type: 'image' });
-            }
+            await Promise.all(
+              documentData
+                .map(({ file }) => file.filename)
+                .filter(Boolean)
+                .map((id) => cloudinary.uploader.destroy(id, { resource_type: 'image' }))
+            );
             throw error;
           }
         }
@@ -897,20 +796,15 @@ app.post(
               await sendEmail(
                 admin.email,
                 'Student Registration Request – Approval Needed',
-                `A new student named ${name} (${email}) with Matric Number ${matricNumber} has submitted a registration request and is awaiting your approval.`,
+                `A new student named ${name} (${email}) with Matric Number ${matricNumber} has submitted a registration request with documents and is awaiting your approval.`,
                 `
           <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
               <h2 style="color: #232f3e;">📌 New Student Registration Request</h2>
               <p><strong>Student:</strong> ${name}</p>
               <p><strong>Email:</strong> ${email}</p>
               <p><strong>Matric Number:</strong> ${matricNumber}</p>
-              <p><strong>Level:</strong> ${level}</p>
-              <p><strong>Score Type:</strong> ${scoreType === 'jamb' ? 'JAMB Score' : 'CGPA'}</p>
-              <p><strong>Score Value:</strong> ${scoreType === 'jamb' ? jambScore : cgpa}</p>
-              <p><strong>Guardian Phone:</strong> ${guardianPhone}</p>
-              <p><strong>Health Status:</strong> ${healthStatus}</p>
-              <p><strong>Documents Uploaded:</strong> School Fees Receipt</p>
-              <p><a href="${frontend}/admin/student-documents" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Review Application</a></p>
+              <p><strong>Documents Uploaded:</strong> ${jambOrCgpaType}, Admission Letter, NIN</p>
+              <p><a href="${frontend}/admin/student-documents" style="display: inline-block; background-color: #0073bb; color: white; padding: 10px 16px; border-radius: 6px; text-decoration: none;">Review Documents</a></p>
               <hr style="margin: 20px 0;" />
               <p style="font-size: 12px; color: #666;">Please take appropriate action in the Admin Dashboard.</p>
           </div>
@@ -940,16 +834,23 @@ app.post(
       } catch (error) {
         console.error('❌ Registration Error:', error);
         // Clean up Cloudinary files on error
-        if (userType === 'student' && req.files && req.files.fees) {
-          const publicId = req.files.fees[0]?.filename;
-          if (publicId) {
-            await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
-          }
+        if (userType === 'student' && req.files) {
+          const files = req.files;
+          const publicIds = [
+            files.jambOrCgpa?.[0]?.filename,
+            files.admissionLetter?.[0]?.filename,
+            files.nin?.[0]?.filename,
+          ].filter(Boolean);
+          await Promise.all(
+            publicIds.map((id) => cloudinary.uploader.destroy(id, { resource_type: 'image' }))
+          );
         }
         res.status(500).json({ error: { message: 'Failed to register', code: 'SERVER_ERROR', details: error.message } });
       }
     }
 );
+
+
 
 // Generate OTP (Admin)
 app.post( 
@@ -1284,16 +1185,10 @@ app.get('/api/students/stats', verifyToken, isAdmin, async (req, res) => {
 app.get('/api/students', verifyToken, isAdmin, async (req, res) => {
     try {
         const students = await User.find({ userType: 'student' })
-            .select('name email userType status createdAt matricNumber phone guardianPhone gender dateOfBirth faculty level department scoreType jambScore cgpa healthStatus healthComments room interviewDate')
+            .select('name email userType status createdAt matricNumber phone gender dateOfBirth faculty level department room interviewDate')
             .populate('room', 'roomNumber')
-            .sort({ createdAt: -1 })
             .lean();
-        
-        res.json({ 
-            success: true,
-            students: students,
-            count: students.length
-        });
+        res.json(students);
     } catch (error) {
         console.error('❌ Students Error:', error);
         res.status(500).json({ error: { message: 'Failed to load students', code: 'SERVER_ERROR' } });
@@ -1304,9 +1199,8 @@ app.get('/api/students', verifyToken, isAdmin, async (req, res) => {
 app.get('/api/pending-requests', verifyToken, isAdmin, async (req, res) => {
     try {
         const requests = await User.find({ userType: 'student', status: 'Pending' })
-            .select('name email matricNumber phone guardianPhone gender dateOfBirth faculty level department scoreType jambScore cgpa healthStatus healthComments createdAt status _id interviewDate')
+            .select('name email matricNumber phone gender dateOfBirth faculty level department createdAt status _id interviewDate')
             .lean();
-        
         res.json({ requests });
     } catch (error) {
         console.error('❌ Pending Requests Error:', error);
@@ -1373,44 +1267,25 @@ app.post(
             student.interviewDate = interviewDateTime;
             await student.save();
 
-            // Fetch welcome documents
-            const welcomeDocs = await WelcomeDocument.find({
-                pdfUrl: { $exists: true, $ne: '' },
-            }).sort({ updatedAt: -1 });
-            const pdfUrls = welcomeDocs.map((doc) => doc.pdfUrl);
-            const pdfLinksHtml = pdfUrls.length
-                ? pdfUrls
-                    .map(
-                        (url, index) =>
-                            `<li><a href="${url}" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide ${index + 1}</a></li>`
-                    )
-                    .join('')
-                : `<li><a href="https://www.dropbox.com/scl/fi/0i4r8x3sr7irlcmez9scd/NEAR-HOSTEL-AGREEMENT.pdf?rlkey=svmwneyiff3pnxq85hh9o6eiu&st=oek0pb71&dl=1" style="color: #0073bb; text-decoration: none;">📄 Welcome Guide</a></li>`;
-
+            
             try {
 
                 await sendEmail(
                     student.email,
                     'Adem Baba – Interview Invitation',
-                    `Hello ${student.name}, your registration has been accepted. You are invited for an interview on ${interviewDateTime.toLocaleString()} at the Adem Baba Hostel Office.`,
+                    `Hello ${student.name},  You are invited for an interview on ${interviewDateTime.toLocaleString()} at the Adem Baba Admin Office.`,
                     `
               <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
                 <h2 style="color: #232f3e;">📅 Interview Scheduled</h2>
                 <p>Hi <strong>${student.name}</strong>,</p>
-                <p>Congratulations! Your registration request has been accepted.</p>
+                <p>congratulation</p>
                 <p>You are invited to attend an in-person interview. Please find the details below:</p>
                 <ul style="line-height: 1.6;">
                   <li><strong>Date:</strong> ${interviewDateTime.toLocaleDateString()}</li>
                   <li><strong>Time:</strong> ${interviewTime}</li>
-                  <li><strong>Location:</strong> Adem Baba Hostel Office</li>
+                  <li><strong>Location:</strong> Adem Baba Hostel (Admin Office) </li>
                 </ul>
-                <p>📎 Download the documents print and fill the necessary information(s):</p>
-                <p>📎 The payment will be made to the hostel account which will be specified by the admin and the slip will be uploaded through the website</p>
-                <p> After you have made the transfer to the account, go to the login page fill in your login details you will be redirected to uplaod the payment slip after the process has completed message the admin and wait for a comfirmation email, then you may procced to your dashobard</p>
-                <p>📎 <strong>NOTE: </strong>All the document listed here should filled printed and taken with you to the interview </p>
-                <ul style="padding-left: 20px; line-height: 1.6;">
-                  ${pdfLinksHtml}
-                </ul>
+                <p>📎 you are required to come along with your school ID CARD/ Admission letter(s):</p>
                 <hr style="margin: 20px 0;" />
                 <p style="font-size: 12px; color: #666;">If you have any questions or are unable to attend, please contact the office as soon as possible.</p>
               </div>
@@ -1422,12 +1297,12 @@ app.post(
                 await sendEmail(
                     student.email,
                     'Adem Baba – Interview Invitation',
-                    `Hello ${student.name}, your registration has been accepted. You are invited for an interview on ${interviewDateTime.toLocaleString()} at the Adem Baba Hostel Office.`,
+                    `Hello ${student.name}, You are invited for an interview on ${interviewDateTime.toLocaleString()} at the Adem Baba Admin Office.`,
                     `
               <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e2e2; border-radius: 8px;">
                 <h2 style="color: #232f3e;">🎓 Interview Invitation</h2>
                 <p>Hi <strong>${student.name}</strong>,</p>
-                <p>We’re pleased to inform you that your registration has been accepted.</p>
+                <p>We’re pleased to inform you that your registration has been fowarded.</p>
                 <p><strong>You are scheduled for an interview with the following details:</strong></p>
                 <ul style="line-height: 1.6;">
                   <li><strong>Date:</strong> ${interviewDateTime.toLocaleDateString()}</li>
@@ -1436,13 +1311,6 @@ app.post(
                 </ul>
                 
                 <p>Please ensure you arrive a few minutes early and bring any necessary documents.</p>
-                <p>📎 The payment will be made to the hostel account which will be specified by the admin and the slip will be uploaded through the website</p>
-                <p> After you have made the transfer to the account, go to the login page fill in your login details you will be redirected to uplaod the payment slip after the process has completed message the admin and wait for a comfirmation email, then you may procced to your dashobard</p>
-                <p>📎 All the document listed here shoulb filled printed and taken with you to the interview </p>
-                <p>📎 Download the welcome guide(s):</p>
-                <ul style="padding-left: 20px; line-height: 1.6;">
-                  ${pdfLinksHtml}
-                </ul>
                 <hr style="margin: 20px 0;" />
                 <p style="font-size: 12px; color: #666;">If you have any questions or are unable to attend, please notify the office in advance.</p>
               </div>
@@ -3741,7 +3609,7 @@ app.get('/api/student-documents/:documentId/download', verifyToken, isAdmin, asy
         // Determine filename based on document type
         let filename;
         if (document.fileName.includes('NIN')) {
-            filename = `FEES_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
+            filename = `NIN_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
         } else if (document.fileName.includes('Admission')) {
             filename = `Admission_Letter_${document.student.matricNumber}.${document.fileUrl.split('.').pop()}`;
         } else if (document.fileName.includes('CGPA')) {
@@ -3775,3 +3643,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
 });
+
